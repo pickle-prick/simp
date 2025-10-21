@@ -240,7 +240,9 @@ void main()
   /////////////////////////////////////////////////////////////////////////////////////
   // light acc
 
-  vec4 diffuse = mat.diffuse_color;
+  vec4 diffuse = color;
+  // FIXME: find a better way to use vertex color
+  // vec4 diffuse = mat.diffuse_color;
   if(mat.has_diffuse_texture > 0)
   {
     diffuse *= mat.diffuse_sample_channel_map * texture(texSampler, texcoord);
