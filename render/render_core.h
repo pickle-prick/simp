@@ -184,8 +184,9 @@ struct R_Mesh3DInst
   Mat4x4F32 *joint_xforms;
   U32 joint_count;
   U32 first_joint;
-  B32 depth_test;
+  B32 has_material;
   B32 omit_light;
+  Vec4F32 color_override;
 };
 
 ////////////////////////////////

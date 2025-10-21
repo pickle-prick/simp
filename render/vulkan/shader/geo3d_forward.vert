@@ -1,6 +1,8 @@
 #version 450
 
-// The order of uniform and input decleration does not matter here
+////////////////////////////////
+// Vertex Buffer
+
 layout(location = 0)  in vec3   pos;
 layout(location = 1)  in vec3   nor;
 layout(location = 2)  in vec2   tex;
@@ -9,20 +11,27 @@ layout(location = 4)  in vec4   col;
 layout(location = 5)  in uvec4  joints;
 layout(location = 6)  in vec4   weights;
 
-// Instance buffer
-layout(location = 7)   in mat4  model;
-layout(location = 11)  in mat4  model_inv;
+////////////////////////////////
+// Instance Buffer
 
+layout(location = 7)  in mat4  model;
+layout(location = 11) in mat4  model_inv;
 layout(location = 15) in vec2  id;
 layout(location = 16) in uint  material_idx;
 layout(location = 17) in uint  draw_edge;
 layout(location = 18) in uint  joint_count;
 layout(location = 19) in uint  first_joint;
-layout(location = 20) in uint  depth_test;
+layout(location = 20) in uint  has_material;
 layout(location = 21) in uint  omit_light;
+layout(location = 22) in vec4  color_override;
+
 
 // It is important to know that some types, like dvec3 64 bit vectors, use multiple slots
 // That means that the index after it must be at least 2 higher
+
+////////////////////////////////
+// Frag shader input
+
 layout(location = 0)       out  vec2  frag_texcoord;
 layout(location = 1)       out  vec4  frag_color;
 layout(location = 2)  flat out  vec2  frag_id;
@@ -33,8 +42,9 @@ layout(location = 6)       out  vec3  frag_pos_world;
 layout(location = 7)       out  vec3  frag_pos_view;
 layout(location = 8)       out  mat4  frag_nor_mat;
 layout(location = 12) flat out  uint  frag_draw_edge;
-layout(location = 13) flat out  uint  frag_depth_test;
+layout(location = 13) flat out  uint  frag_has_material;
 layout(location = 14) flat out  uint  frag_mat_idx;
+layout(location = 15) flat out  vec4  frag_color_override;
 
 /////////////////////////////////////////////////////////////////////////////////////////
 // ubo/sbo
@@ -104,17 +114,17 @@ void main()
   vec4 nor_world = normalize(normal_mat * nor_local);
   vec4 nor_view = ubo.view * nor_world;
 
-  // Output
-  frag_texcoord   = tex;
-  frag_color      = col;
-  frag_id         = id;
-  frag_omit_light = omit_light;
-  frag_nor_world  = nor_world.xyz;
-  frag_nor_view   = nor_view.xyz;
-  frag_pos_world  = pos_world.xyz/pos_world.w;
-  frag_pos_view   = pos_view.xyz;
-  frag_draw_edge  = draw_edge;
-  frag_depth_test = depth_test;
-  frag_nor_mat    = normal_mat;
-  frag_mat_idx    = material_idx;
+  frag_texcoord       = tex;
+  frag_color          = col;
+  frag_id             = id;
+  frag_omit_light     = omit_light;
+  frag_nor_world      = nor_world.xyz;
+  frag_nor_view       = nor_view.xyz;
+  frag_pos_world      = pos_world.xyz/pos_world.w;
+  frag_pos_view       = pos_view.xyz;
+  frag_draw_edge      = draw_edge;
+  frag_has_material   = has_material;
+  frag_nor_mat        = normal_mat;
+  frag_mat_idx        = material_idx;
+  frag_color_override = color_override;
 }

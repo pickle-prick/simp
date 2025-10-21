@@ -2250,12 +2250,11 @@ r_vulkan_gfx_pipeline(R_Vulkan_PipelineKind kind, R_GeoTopologyKind topology, R_
   // It specifies the number of bytes between data entries and whether to move to the next data entry after each vertex or after each instance
   VkPipelineVertexInputStateCreateInfo vtx_input_state_create_info = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
 
-  VkVertexInputBindingDescription vtx_binding_desc[2] = {0};
-#define MAX_VERTEX_ATTRIBUTE_DESCRIPTION_COUNT 22
-  VkVertexInputAttributeDescription vtx_attr_descs[MAX_VERTEX_ATTRIBUTE_DESCRIPTION_COUNT];
-
+  VkVertexInputBindingDescription *vtx_binding_descs = 0;
+  VkVertexInputAttributeDescription *vtx_attr_descs = 0;
   U64 vtx_binding_desc_count = 0;
-  U64 vtx_attr_desc_cnt      = 0;
+  U64 vtx_attr_desc_cnt = 0;
+
   switch(kind)
   {
     case R_Vulkan_PipelineKind_GFX_Geo3D_Debug:
@@ -2267,10 +2266,12 @@ r_vulkan_gfx_pipeline(R_Vulkan_PipelineKind kind, R_GeoTopologyKind topology, R_
     {
       vtx_binding_desc_count = 2;
       vtx_attr_desc_cnt = 20;
+      vtx_binding_descs = push_array(scratch.arena, VkVertexInputBindingDescription, vtx_binding_desc_count);
+      vtx_attr_descs = push_array(scratch.arena, VkVertexInputAttributeDescription, vtx_attr_desc_cnt);
 
-      vtx_binding_desc[0].binding   = 0;
-      vtx_binding_desc[0].stride    = sizeof(R_Geo3D_Vertex);
-      vtx_binding_desc[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+      vtx_binding_descs[0].binding   = 0;
+      vtx_binding_descs[0].stride    = sizeof(R_Geo3D_Vertex);
+      vtx_binding_descs[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
       vtx_attr_descs[0].binding = 0;
       vtx_attr_descs[0].location = 0;
@@ -2308,9 +2309,9 @@ r_vulkan_gfx_pipeline(R_Vulkan_PipelineKind kind, R_GeoTopologyKind topology, R_
       vtx_attr_descs[6].offset   = offsetof(R_Geo3D_Vertex, weights);
 
       // Instance binding xform (vec4 x4)
-      vtx_binding_desc[1].binding   = 1;
-      vtx_binding_desc[1].stride    = sizeof(R_Mesh2DInst);
-      vtx_binding_desc[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+      vtx_binding_descs[1].binding   = 1;
+      vtx_binding_descs[1].stride    = sizeof(R_Mesh2DInst);
+      vtx_binding_descs[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
 
       // xform
       vtx_attr_descs[7].binding  = 1;
@@ -2388,17 +2389,22 @@ r_vulkan_gfx_pipeline(R_Vulkan_PipelineKind kind, R_GeoTopologyKind topology, R_
     case R_Vulkan_PipelineKind_GFX_Geo3D_Forward:
     {
       vtx_binding_desc_count = 2;
-      vtx_attr_desc_cnt = 22;
+      vtx_attr_desc_cnt = 23;
+      vtx_binding_descs = push_array(scratch.arena, VkVertexInputBindingDescription, vtx_binding_desc_count);
+      vtx_attr_descs = push_array(scratch.arena, VkVertexInputAttributeDescription, vtx_attr_desc_cnt);
+
+      ////////////////////////////////
+      // Vertex Buffer
 
       // All of our per-vertex data is packed together in one array, so we'are only going to have one binding for now
       // This specifies the index of the binding in the array of bindings
-      vtx_binding_desc[0].binding   = 0;
+      vtx_binding_descs[0].binding   = 0;
       // This specifies the number of bytes from one entry to the next
-      vtx_binding_desc[0].stride    = sizeof(R_Geo3D_Vertex);
+      vtx_binding_descs[0].stride    = sizeof(R_Geo3D_Vertex);
       // The inputRate parameter can have one of the following values
       // 1. VK_VERTEX_INPUT_RATE_VERTEX: move to the next data entry after each vertex
       // 2. VK_VERTEX_INPUT_RATE_INSTANCE: move to the next data entary after each instance
-      vtx_binding_desc[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+      vtx_binding_descs[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
       // The VkVertexInputAttributeDescription describes how to handle vertex input
       // An attribute description struct describes how to extract a vertex attribtue from a chunk of vertex data originating from a binding description
@@ -2457,10 +2463,13 @@ r_vulkan_gfx_pipeline(R_Vulkan_PipelineKind kind, R_GeoTopologyKind topology, R_
       vtx_attr_descs[6].format   = VK_FORMAT_R32G32B32A32_SFLOAT;
       vtx_attr_descs[6].offset   = offsetof(R_Geo3D_Vertex, weights);
 
+      ////////////////////////////////
+      // Instance Buffer
+
       // Instance binding xform (vec4 x4)
-      vtx_binding_desc[1].binding   = 1;
-      vtx_binding_desc[1].stride    = sizeof(R_Mesh3DInst);
-      vtx_binding_desc[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+      vtx_binding_descs[1].binding   = 1;
+      vtx_binding_descs[1].stride    = sizeof(R_Mesh3DInst);
+      vtx_binding_descs[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
 
       // xform
       vtx_attr_descs[7].binding  = 1;
@@ -2538,22 +2547,30 @@ r_vulkan_gfx_pipeline(R_Vulkan_PipelineKind kind, R_GeoTopologyKind topology, R_
       vtx_attr_descs[20].binding  = 1;
       vtx_attr_descs[20].location = 20;
       vtx_attr_descs[20].format   = VK_FORMAT_R32_UINT;
-      vtx_attr_descs[20].offset   = offsetof(R_Mesh3DInst, depth_test);
+      vtx_attr_descs[20].offset   = offsetof(R_Mesh3DInst, has_material);
 
       // omit light
       vtx_attr_descs[21].binding  = 1;
       vtx_attr_descs[21].location = 21;
       vtx_attr_descs[21].format   = VK_FORMAT_R32_UINT;
       vtx_attr_descs[21].offset   = offsetof(R_Mesh3DInst, omit_light);
+
+      // color override
+      vtx_attr_descs[22].binding  = 1;
+      vtx_attr_descs[22].location = 22;
+      vtx_attr_descs[22].format   = VK_FORMAT_R32G32B32A32_SFLOAT;
+      vtx_attr_descs[22].offset   = offsetof(R_Mesh3DInst, color_override);
     }break;
     case(R_Vulkan_PipelineKind_GFX_Rect):
     {
       vtx_binding_desc_count = 1;
       vtx_attr_desc_cnt = 10;
+      vtx_binding_descs = push_array(scratch.arena, VkVertexInputBindingDescription, vtx_binding_desc_count);
+      vtx_attr_descs = push_array(scratch.arena, VkVertexInputAttributeDescription, vtx_attr_desc_cnt);
 
-      vtx_binding_desc[0].binding   = 0;
-      vtx_binding_desc[0].stride    = sizeof(R_Rect2DInst);
-      vtx_binding_desc[0].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+      vtx_binding_descs[0].binding   = 0;
+      vtx_binding_descs[0].stride    = sizeof(R_Rect2DInst);
+      vtx_binding_descs[0].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
 
       // dst
       vtx_attr_descs[0].binding  = 0;
@@ -2630,7 +2647,7 @@ r_vulkan_gfx_pipeline(R_Vulkan_PipelineKind kind, R_GeoTopologyKind topology, R_
 
   }
   vtx_input_state_create_info.vertexBindingDescriptionCount   = vtx_binding_desc_count;
-  vtx_input_state_create_info.pVertexBindingDescriptions      = vtx_binding_desc;
+  vtx_input_state_create_info.pVertexBindingDescriptions      = vtx_binding_descs;
   vtx_input_state_create_info.vertexAttributeDescriptionCount = vtx_attr_desc_cnt;
   vtx_input_state_create_info.pVertexAttributeDescriptions    = vtx_attr_descs;
 
@@ -2717,6 +2734,7 @@ r_vulkan_gfx_pipeline(R_Vulkan_PipelineKind kind, R_GeoTopologyKind topology, R_
     {
       // rasterization_state_create_info.polygonMode = VK_POLYGON_MODE_LINE;
       rasterization_state_create_info.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+      // rasterization_state_create_info.frontFace = VK_FRONT_FACE_CLOCKWISE;
     }break;
     case R_Vulkan_PipelineKind_GFX_Geo3D_Debug:
     case R_Vulkan_PipelineKind_GFX_Rect:

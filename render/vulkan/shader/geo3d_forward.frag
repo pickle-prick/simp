@@ -13,8 +13,9 @@ layout(location = 6)       in vec3  pos_world;
 layout(location = 7)       in vec3  pos_view;
 layout(location = 8)       in mat4  nor_mat;
 layout(location = 12) flat in uint  draw_edge;
-layout(location = 13) flat in uint  depth_test;
+layout(location = 13) flat in uint  has_material;
 layout(location = 14) flat in uint  mat_idx;
+layout(location = 15) flat in vec4  color_override;
 
 layout(location = 0) out vec4  out_color;
 layout(location = 1) out vec4  out_normal_depth;
@@ -230,7 +231,7 @@ void main()
   // NOTE(k): https://registry.khronos.org/OpenGL-Refpages/gl4/html/gl_FragDepth.xhtml
   // If a shader statically assigns to gl_FragDepth, then the value of the fragment's depth may be undefined for executions of the shader that don't take that path
   // TODO(k): this will disblae EARLY_FRAGMENT_TEST, thus effect the performance, do we really need this
-  gl_FragDepth = depth_test == 1 ? gl_FragCoord.z : 0.0f;
+  // gl_FragDepth = depth_test == 1 ? gl_FragCoord.z : 0.0f;
 
   /////////////////////////////////////////////////////////////////////////////////////
   // material
@@ -241,8 +242,14 @@ void main()
   // light acc
 
   vec4 diffuse = color;
-  // FIXME: find a better way to use vertex color
-  // vec4 diffuse = mat.diffuse_color;
+  if(color_override.w > 0)
+  {
+    diffuse = color_override;
+  }
+  if(has_material > 0)
+  {
+    diffuse = mat.diffuse_color;
+  }
   if(mat.has_diffuse_texture > 0)
   {
     diffuse *= mat.diffuse_sample_channel_map * texture(texSampler, texcoord);

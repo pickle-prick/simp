@@ -20,6 +20,7 @@ layout(location = 18) in uint  joint_count;
 layout(location = 19) in uint  first_joint;
 layout(location = 20) in uint  depth_test;
 layout(location = 21) in uint  omit_light;
+layout(location = 22) in vec4  color_override;
 
 layout(std140, set=0, binding=0) uniform UniformBufferObject {
     mat4 view;
