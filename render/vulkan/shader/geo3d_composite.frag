@@ -74,7 +74,7 @@ void main()
 {
   // edge detection (using sobel filter)
   vec2 tex_size = textureSize(geo3d_normal_depth_sampler, 0);
-  float texel_scale = 1.f;
+  float texel_scale = 4.f;
   vec2 texel = texel_scale / tex_size;
 
   float normal_edge = edge_from_normal(texel);
