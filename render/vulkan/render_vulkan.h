@@ -717,6 +717,7 @@ internal void                    r_vulkan_descriptor_set_destroy(R_Vulkan_Descri
 //- sync primitives
 internal VkFence                 r_vulkan_fence();
 internal VkSemaphore             r_vulkan_semaphore(VkDevice device);
+internal void                    r_vulkan_cleanup_unsafe_semaphore(VkQueue queue, VkSemaphore semaphore);
 
 //- sync helpers
 internal void                    r_vulkan_image_transition(VkCommandBuffer cmd_buf, VkImage image, VkImageLayout old_layout, VkImageLayout new_layout, VkPipelineStageFlags src_stage, VkAccessFlags src_access_flag, VkPipelineStageFlags dst_stage, VkAccessFlags dst_access_flag, VkImageAspectFlags aspect_mask);

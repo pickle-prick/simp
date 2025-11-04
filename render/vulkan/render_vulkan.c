@@ -2006,6 +2006,18 @@ r_vulkan_semaphore(VkDevice device)
   return sem;
 }
 
+internal void
+r_vulkan_cleanup_unsafe_semaphore(VkQueue queue, VkSemaphore semaphore)
+{
+  VkPipelineStageFlags psw = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+  VkSubmitInfo submit_info = {0};
+  submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  submit_info.waitSemaphoreCount = 1;
+  submit_info.pWaitSemaphores = &semaphore;
+  submit_info.pWaitDstStageMask = &psw;
+  vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE);
+}
+
 //- sync helpers
 
 /*
@@ -5364,11 +5376,15 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
   while(1)
   {
     // Acquire image from swapchain
+    // FIXME: this will signal img_acq_sem, so we can't call it in a loop here
     ret = vkAcquireNextImageKHR(device->h, wnd->render_targets->swapchain.h, UINT64_MAX, frame->img_acq_sem, VK_NULL_HANDLE, &frame->img_idx);
     // TODO(XXX): this one don't trigger somehow, find out why
     if(ret == VK_ERROR_OUT_OF_DATE_KHR || ret == VK_SUBOPTIMAL_KHR)
     {
       r_vulkan_window_resize(wnd);
+      r_vulkan_cleanup_unsafe_semaphore(r_vulkan_state->logical_device.gfx_queue, frame->img_acq_sem);
+      // NOTE(k): this part is not a hotspot, to make it simple, we just use a vkDeviceWaitIdle
+      VK_Assert(vkQueueWaitIdle(r_vulkan_state->logical_device.gfx_queue));
       continue;
     }
     AssertAlways(ret == VK_SUCCESS);
