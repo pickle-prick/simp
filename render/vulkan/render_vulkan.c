@@ -5384,6 +5384,7 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
       r_vulkan_window_resize(wnd);
       r_vulkan_cleanup_unsafe_semaphore(r_vulkan_state->logical_device.gfx_queue, frame->img_acq_sem);
       // NOTE(k): this part is not a hotspot, to make it simple, we just use a vkDeviceWaitIdle
+      // https://stackoverflow.com/questions/70762372/how-to-recreate-swapchain-after-vkacquirenextimagekhr-is-vk-suboptimal-khr?utm_source=chatgpt.com
       VK_Assert(vkQueueWaitIdle(r_vulkan_state->logical_device.gfx_queue));
       continue;
     }
