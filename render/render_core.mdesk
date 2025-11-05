@@ -59,7 +59,7 @@ R_GeoPolygonKindTable:
 {
   {Fill           "Fill"           }
   {Line           "Line"           }
-  {Point          "Point"          }
+  // {Point          "Point"          }
 }
 
 @table(name, batch, display_string)

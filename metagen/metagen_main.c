@@ -42,6 +42,10 @@ entry_point(CmdLine *cmdline)
   String8 build_dir_path   = os_get_process_info()->binary_path;
   String8 project_dir_path = str8_chop_last_slash(build_dir_path);
   String8 code_dir_path    = push_str8f(mg_arena, "%S/src", project_dir_path);
+  if(cmdline->inputs.node_count > 0)
+  {
+    code_dir_path = push_str8f(mg_arena, "%S/%S", project_dir_path, cmdline->inputs.first->string);
+  }
   
   //////////////////////////////
   //- rjf: search code directories for all files to consider
@@ -152,7 +156,8 @@ entry_point(CmdLine *cmdline)
   for(MG_FileParseNode *n = parses.first; n != 0; n = n->next)
   {
     MD_Node *file = n->v.root;
-    String8 layer_key = mg_layer_key_from_path(file->string);
+    String8 layer_key = str8_chop_last_slash(str8_skip(file->string, code_dir_path.size+1));
+    // String8 layer_key = mg_layer_key_from_path(file->string);
     MG_Layer *layer = mg_layer_from_key(layer_key);
     for(MD_EachNode(node, file->first))
     {
@@ -232,7 +237,8 @@ entry_point(CmdLine *cmdline)
           enum_member_prefix = str8_chop(enum_name, 1);
         }
         String8 enum_base_type_name = tag->first->string;
-        String8 layer_key = mg_layer_key_from_path(file->string);
+        String8 layer_key = str8_chop_last_slash(str8_skip(file->string, code_dir_path.size+1));
+        // String8 layer_key = mg_layer_key_from_path(file->string);
         MG_Layer *layer = mg_layer_from_key(layer_key);
         String8List gen_strings = mg_string_list_from_table_gen(mg_arena, table_grid_map, table_col_map, str8_lit(""), node);
         if(enum_base_type_name.size == 0)
@@ -272,7 +278,8 @@ entry_point(CmdLine *cmdline)
       MD_Node *tag = md_tag_from_string(node, str8_lit("xlist"), 0);
       if(!md_node_is_nil(tag))
       {
-        String8 layer_key = mg_layer_key_from_path(file->string);
+        String8 layer_key = str8_chop_last_slash(str8_skip(file->string, code_dir_path.size+1));
+        // String8 layer_key = mg_layer_key_from_path(file->string);
         MG_Layer *layer = mg_layer_from_key(layer_key);
         String8List gen_strings = mg_string_list_from_table_gen(mg_arena, table_grid_map, table_col_map, str8_lit(""), node);
         str8_list_pushf(mg_arena, &layer->enums, "#define %S \\\n", node->string);
@@ -296,7 +303,8 @@ entry_point(CmdLine *cmdline)
     {
       if(md_node_has_tag(node, str8_lit("struct"), 0))
       {
-        String8 layer_key = mg_layer_key_from_path(file->string);
+        String8 layer_key = str8_chop_last_slash(str8_skip(file->string, code_dir_path.size+1));
+        // String8 layer_key = mg_layer_key_from_path(file->string);
         MG_Layer *layer = mg_layer_from_key(layer_key);
         String8List gen_strings = mg_string_list_from_table_gen(mg_arena, table_grid_map, table_col_map, str8_lit(""), node);
         str8_list_pushf(mg_arena, &layer->structs, "typedef struct %S %S;\n", node->string, node->string);
@@ -323,7 +331,8 @@ entry_point(CmdLine *cmdline)
       if(!md_node_is_nil(tag))
       {
         String8 element_type = tag->first->string;
-        String8 layer_key = mg_layer_key_from_path(file->string);
+        String8 layer_key = str8_chop_last_slash(str8_skip(file->string, code_dir_path.size+1));
+        // String8 layer_key = mg_layer_key_from_path(file->string);
         MG_Layer *layer = mg_layer_from_key(layer_key);
         String8List gen_strings = mg_string_list_from_table_gen(mg_arena, table_grid_map, table_col_map, str8_lit(""), node);
         if(!md_node_has_tag(node, str8_lit("c_file"), 0))
@@ -353,7 +362,8 @@ entry_point(CmdLine *cmdline)
       if(!md_node_is_nil(tag))
       {
         String8 enum_type = tag->first->string;
-        String8 layer_key = mg_layer_key_from_path(file->string);
+        String8 layer_key = str8_chop_last_slash(str8_skip(file->string, code_dir_path.size+1));
+        // String8 layer_key = mg_layer_key_from_path(file->string);
         MG_Layer *layer = mg_layer_from_key(layer_key);
         String8List gen_strings = mg_string_list_from_table_gen(mg_arena, table_grid_map, table_col_map, str8_lit(""), node);
         str8_list_pushf(mg_arena, &layer->h_functions, "internal String8 %S(%S v);\n", node->string, enum_type);
@@ -385,7 +395,8 @@ entry_point(CmdLine *cmdline)
       MD_Node *tag = md_tag_from_string(node, str8_lit("gen"), 0);
       if(!md_node_is_nil(tag))
       {
-        String8 layer_key = mg_layer_key_from_path(file->string);
+        String8 layer_key = str8_chop_last_slash(str8_skip(file->string, code_dir_path.size+1));
+        // String8 layer_key = mg_layer_key_from_path(file->string);
         MG_Layer *layer = mg_layer_from_key(layer_key);
         B32 prefer_c_file = md_node_has_tag(node, str8_lit("c_file"), 0);
         String8List *out = prefer_c_file ? &layer->c_catchall : &layer->h_catchall;
@@ -416,7 +427,8 @@ entry_point(CmdLine *cmdline)
     {
       if(md_node_has_tag(node, str8_lit("embed_string"), 0))
       {
-        String8 layer_key = mg_layer_key_from_path(file->string);
+        String8 layer_key = str8_chop_last_slash(str8_skip(file->string, code_dir_path.size+1));
+        // String8 layer_key = mg_layer_key_from_path(file->string);
         MG_Layer *layer = mg_layer_from_key(layer_key);
         String8 embed_string = mg_c_string_literal_from_multiline_string(node->first->string);
         str8_list_pushf(mg_arena, &layer->h_tables, "read_only global String8 %S =\nstr8_lit_comp(\n", node->string);
@@ -425,7 +437,8 @@ entry_point(CmdLine *cmdline)
       }
       if(md_node_has_tag(node, str8_lit("embed_file"), 0))
       {
-        String8 layer_key = mg_layer_key_from_path(file->string);
+        String8 layer_key = str8_chop_last_slash(str8_skip(file->string, code_dir_path.size+1));
+        // String8 layer_key = mg_layer_key_from_path(file->string);
         MG_Layer *layer = mg_layer_from_key(layer_key);
         String8 data = os_data_from_file_path(mg_arena, node->first->string);
         String8 embed_string = mg_c_array_literal_contents_from_data(data);

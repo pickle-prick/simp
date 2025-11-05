@@ -2699,7 +2699,7 @@ r_vulkan_gfx_pipeline(R_Vulkan_PipelineKind kind, R_GeoTopologyKind topology, R_
   {
     case R_GeoPolygonKind_Fill:  {vk_polygon = VK_POLYGON_MODE_FILL;}break;
     case R_GeoPolygonKind_Line:  {vk_polygon = VK_POLYGON_MODE_LINE;}break;
-    case R_GeoPolygonKind_Point: {vk_polygon = VK_POLYGON_MODE_POINT;}break;
+    // case R_GeoPolygonKind_Point: {vk_polygon = VK_POLYGON_MODE_POINT;}break;
     default:                     {InvalidPath;}break;
   }
 

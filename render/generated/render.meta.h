@@ -48,7 +48,6 @@ typedef enum R_GeoPolygonKind
 {
 R_GeoPolygonKind_Fill,
 R_GeoPolygonKind_Line,
-R_GeoPolygonKind_Point,
 R_GeoPolygonKind_COUNT,
 } R_GeoPolygonKind;
 
