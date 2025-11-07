@@ -1622,6 +1622,7 @@ w32_entry_point_caller(int argc, WCHAR **wargv)
     {
       os_w32_state.microsecond_resolution = large_int_resolution.QuadPart;
     }
+    timeBeginPeriod(1); // set minimum timer resolution
   }
   {
     OS_SystemInfo *info = &os_w32_state.system_info;
