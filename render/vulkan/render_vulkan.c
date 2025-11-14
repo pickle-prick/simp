@@ -2009,13 +2009,15 @@ r_vulkan_semaphore(VkDevice device)
 internal void
 r_vulkan_cleanup_unsafe_semaphore(VkQueue queue, VkSemaphore semaphore)
 {
+  ProfBeginFunction();
   VkPipelineStageFlags psw = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
   VkSubmitInfo submit_info = {0};
   submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
   submit_info.waitSemaphoreCount = 1;
   submit_info.pWaitSemaphores = &semaphore;
   submit_info.pWaitDstStageMask = &psw;
-  vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE);
+  VK_Assert(vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE));
+  ProfEnd();
 }
 
 //- sync helpers
@@ -2576,7 +2578,7 @@ r_vulkan_gfx_pipeline(R_Vulkan_PipelineKind kind, R_GeoTopologyKind topology, R_
     case(R_Vulkan_PipelineKind_GFX_Rect):
     {
       vtx_binding_desc_count = 1;
-      vtx_attr_desc_cnt = 10;
+      vtx_attr_desc_cnt = 11;
       vtx_binding_descs = push_array(scratch.arena, VkVertexInputBindingDescription, vtx_binding_desc_count);
       vtx_attr_descs = push_array(scratch.arena, VkVertexInputAttributeDescription, vtx_attr_desc_cnt);
 
@@ -2638,11 +2640,17 @@ r_vulkan_gfx_pipeline(R_Vulkan_PipelineKind kind, R_GeoTopologyKind topology, R_
       vtx_attr_descs[8].format   = VK_FORMAT_R32G32B32A32_SFLOAT;
       vtx_attr_descs[8].offset   = offsetof(R_Rect2DInst, omit_texture);
 
-      // line
+      // pixel id
       vtx_attr_descs[9].binding  = 0;
       vtx_attr_descs[9].location = 9;
       vtx_attr_descs[9].format   = VK_FORMAT_R32G32B32A32_SFLOAT;
-      vtx_attr_descs[9].offset   = offsetof(R_Rect2DInst, line);
+      vtx_attr_descs[9].offset   = offsetof(R_Rect2DInst, pixel_id);
+
+      // line
+      vtx_attr_descs[10].binding  = 0;
+      vtx_attr_descs[10].location = 10;
+      vtx_attr_descs[10].format   = VK_FORMAT_R32G32B32A32_SFLOAT;
+      vtx_attr_descs[10].offset   = offsetof(R_Rect2DInst, line);
     }break;
     // case R_Vulkan_PipelineKind_GFX_Blur:
     case R_Vulkan_PipelineKind_GFX_Noise:
@@ -5376,16 +5384,17 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
   while(1)
   {
     // Acquire image from swapchain
-    // FIXME: this will signal img_acq_sem, so we can't call it in a loop here
-    ret = vkAcquireNextImageKHR(device->h, wnd->render_targets->swapchain.h, UINT64_MAX, frame->img_acq_sem, VK_NULL_HANDLE, &frame->img_idx);
-    // TODO(XXX): this one don't trigger somehow, find out why
+    // NOTE: this will signal img_acq_sem, so we can't call it in a loop here, we need to use r_vulkan_cleanup_unsafe_semaphore
+    // FIXME: on amd newest driver(windows), this would cause ~2 seconds if it's called after outdated loop called once, what fuck?
+    ProfScope("Acquire image") ret = vkAcquireNextImageKHR(device->h, wnd->render_targets->swapchain.h, UINT64_MAX, frame->img_acq_sem, VK_NULL_HANDLE, &frame->img_idx);
+    // NOTE: this one won't  trigger on nvidia card, nvidia use frame end submit to handle window resizing which is much better, fuck amd
     if(ret == VK_ERROR_OUT_OF_DATE_KHR || ret == VK_SUBOPTIMAL_KHR)
     {
       r_vulkan_window_resize(wnd);
       r_vulkan_cleanup_unsafe_semaphore(r_vulkan_state->logical_device.gfx_queue, frame->img_acq_sem);
       // NOTE(k): this part is not a hotspot, to make it simple, we just use a vkDeviceWaitIdle
       // https://stackoverflow.com/questions/70762372/how-to-recreate-swapchain-after-vkacquirenextimagekhr-is-vk-suboptimal-khr?utm_source=chatgpt.com
-      VK_Assert(vkQueueWaitIdle(r_vulkan_state->logical_device.gfx_queue));
+      ProfScope("Wait gfx queue idle") VK_Assert(vkQueueWaitIdle(r_vulkan_state->logical_device.gfx_queue));
       continue;
     }
     AssertAlways(ret == VK_SUCCESS);
@@ -5406,6 +5415,7 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
   ////////////////////////////////
   //~ Destroy deprecated render targets
 
+  ProfScope("Destroy deprecated render targets")
   for(R_Vulkan_RenderTargets *t = r_vulkan_state->first_to_free_render_targets; t != 0;)
   {
     R_Vulkan_RenderTargets *next = t->next;
@@ -5475,7 +5485,7 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
   ProfEnd();
 }
 
-r_hook Vec2F32
+r_hook Vec3F32
 r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
 {
   ProfBeginFunction();
@@ -5657,7 +5667,7 @@ r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
   wnd->curr_frame_idx = (wnd->curr_frame_idx + 1) % R_VULKAN_MAX_FRAMES_IN_FLIGHT;
   r_vulkan_pop_cmd();
   ProfEnd();
-  return v2f32(id.x, id.y);
+  return v3f32(id.x, id.y, id.z);
 }
 
 //- rjf: render pass submission

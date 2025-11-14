@@ -352,14 +352,14 @@ dr_rect(Rng2F32 dst, Vec4F32 color, F32 corner_radius, F32 border_thickness, F32
   inst->white_texture_override  = 0.f;
   inst->omit_texture            = 1.f;
   inst->has_pixel_id            = 0.f;
-  inst->pixel_id                = v2f32(0,0);
+  inst->pixel_id                = v3f32(0,0,0);
   inst->line                    = v4f32(0,0,0,0);
   bucket->last_cmd_stack_gen = bucket->stack_gen;
   return inst;
 }
 
 internal inline R_Rect2DInst *
-dr_rect_keyed(Rng2F32 dst, Vec4F32 color, F32 corner_radius, F32 border_thickness, F32 edge_softness, Vec2F32 key)
+dr_rect_keyed(Rng2F32 dst, Vec4F32 color, F32 corner_radius, F32 border_thickness, F32 edge_softness, Vec3F32 key)
 {
   R_Rect2DInst *ret = dr_rect(dst, color, corner_radius, border_thickness, edge_softness);
   ret->pixel_id = key;
@@ -414,14 +414,14 @@ dr_img(Rng2F32 dst, Rng2F32 src, R_Handle texture, Vec4F32 color, F32 corner_rad
   inst->white_texture_override  = 0.f;
   inst->omit_texture            = 0.f;
   inst->has_pixel_id            = 0.f;
-  inst->pixel_id                = v2f32(0,0);
+  inst->pixel_id                = v3f32(0,0,0);
   inst->line                    = v4f32(0,0,0,0);
   bucket->last_cmd_stack_gen = bucket->stack_gen;
   return inst;
 }
 
 internal inline R_Rect2DInst *
-dr_img_keyed(Rng2F32 dst, Rng2F32 src, R_Handle texture, Vec4F32 color, F32 corner_radius, F32 border_thickness, F32 edge_softness, Vec2F32 key)
+dr_img_keyed(Rng2F32 dst, Rng2F32 src, R_Handle texture, Vec4F32 color, F32 corner_radius, F32 border_thickness, F32 edge_softness, Vec3F32 key)
 {
   R_Rect2DInst *ret = dr_img(dst, src, texture, color, corner_radius, border_thickness, edge_softness);
   ret->pixel_id = key;
@@ -480,14 +480,14 @@ dr_line(Vec2F32 a, Vec2F32 b, Vec4F32 color, F32 line_thickness, F32 edge_softne
   inst->white_texture_override  = 0.f;
   inst->omit_texture            = 1.f;
   inst->has_pixel_id            = 0.f;
-  inst->pixel_id                = v2f32(0,0);
+  inst->pixel_id                = v3f32(0,0,0);
   inst->line                    = v4f32(p0.x, p0.y, p1.x, p1.y);
   bucket->last_cmd_stack_gen = bucket->stack_gen;
   return inst;
 }
 
 internal inline R_Rect2DInst *
-dr_line_keyed(Vec2F32 a, Vec2F32 b, Vec4F32 color, F32 line_thickness, F32 edge_softness, Vec2F32 key)
+dr_line_keyed(Vec2F32 a, Vec2F32 b, Vec4F32 color, F32 line_thickness, F32 edge_softness, Vec3F32 key)
 {
   R_Rect2DInst *ret = dr_line(a, b, color, line_thickness, edge_softness);
   ret->pixel_id = key;

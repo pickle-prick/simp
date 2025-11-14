@@ -1,16 +1,17 @@
 #version 450
 
 // CPU2Vertex
-layout(location = 0) in vec4 dst_rect_px;
-layout(location = 1) in vec4 src_rect_px;
-layout(location = 2) in vec4 color00;
-layout(location = 3) in vec4 color10;
-layout(location = 4) in vec4 color01;
-layout(location = 5) in vec4 color11;
-layout(location = 6) in vec4 corner_radii_px;
-layout(location = 7) in vec4 style_params_1;
-layout(location = 8) in vec4 style_params_2;
-layout(location = 9) in vec4 line;
+layout(location = 0)  in vec4 dst_rect_px;
+layout(location = 1)  in vec4 src_rect_px;
+layout(location = 2)  in vec4 color00;
+layout(location = 3)  in vec4 color10;
+layout(location = 4)  in vec4 color01;
+layout(location = 5)  in vec4 color11;
+layout(location = 6)  in vec4 corner_radii_px;
+layout(location = 7)  in vec4 style_params_1;
+layout(location = 8)  in vec4 style_params_2;
+layout(location = 9)  in vec4 pixel_id;
+layout(location = 10) in vec4 line;
 
 layout(location = 0)       out vec4  frag_position;
 layout(location = 1)  flat out vec2  frag_rect_half_size_px;
@@ -26,7 +27,7 @@ layout(location = 9)  flat out float frag_white_texture_override;
 // style_2
 layout(location = 10) flat out float frag_omit_texture;
 layout(location = 11) flat out float frag_has_pixel_id;
-layout(location = 12) flat out vec2  frag_pixel_id;
+layout(location = 12) flat out vec3  frag_pixel_id;
 // line
 layout(location = 13) flat out vec4  frag_line;
 
@@ -78,7 +79,6 @@ void main()
   float white_texture_override = style_params_1.w;
   float omit_texture           = style_params_2.x;
   float has_pixel_id           = style_params_2.y;
-  vec2  pixel_id               = style_params_2.zw;
 
   vec2 rect_normal_pos = positions[gl_VertexIndex];
   vec2 pct             = (rect_normal_pos+1.0) * 0.5; // x: [0-1] y: [0-1]
@@ -101,6 +101,6 @@ void main()
   frag_white_texture_override = white_texture_override;
   frag_omit_texture           = omit_texture;
   frag_has_pixel_id           = has_pixel_id;
-  frag_pixel_id               = pixel_id;
+  frag_pixel_id               = pixel_id.xyz;
   frag_line                   = vec4(line.xy*globals.xform_scale, line.zw*globals.xform_scale);
 }

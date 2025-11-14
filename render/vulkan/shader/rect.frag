@@ -13,7 +13,7 @@ layout(location = 8)  in float line_thickness_px;
 layout(location = 9)  in float white_texture_override;
 layout(location = 10) in float omit_texture;
 layout(location = 11) in float has_pixel_id;
-layout(location = 12) in vec2  pixel_id;
+layout(location = 12) in vec3  pixel_id;
 layout(location = 13) in vec4  line;
 
 // output
@@ -115,7 +115,7 @@ void main()
   c = clamp(c, 0.0, 1.0);
   out_color.rgb = c;
 
-  vec4 id = vec4(pixel_id.xy,0.0,1.0);
+  vec4 id = vec4(pixel_id.xyz,1.0);
   if(has_pixel_id == 0.0)
   {
     id.w = 0;
