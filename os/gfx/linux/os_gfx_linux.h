@@ -54,11 +54,17 @@ struct OS_LNX_GfxState
   {
     Atom INCR;
     Atom CLIPBOARD;
+    Atom TARGETS;
+    Atom UTF8_STRING;
+    Atom STRING;
+    Atom ATOM;
   } atom;
   Cursor cursors[OS_Cursor_COUNT];
   OS_Cursor last_set_cursor;
   OS_GfxInfo gfx_info;
   B32 keydown_cache[OS_Key_COUNT];
+  String8 clip_text;
+  char clipboard[1024];
 };
 
 ////////////////////////////////
@@ -76,5 +82,6 @@ internal Window        os_lnx_x11window_from_handle(OS_Handle window);
 
 // clipboard
 internal String8 os_lnx_get_selection_data(Arena *arena, Atom selectionid, char *mime_type);
+internal void os_lnx_handle_selection_request(XEvent ev);
 
 #endif // OS_GFX_LINUX_H

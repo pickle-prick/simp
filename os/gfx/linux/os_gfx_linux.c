@@ -132,6 +132,7 @@ os_lnx_get_selection_data(Arena *arena, Atom selection_type, char *mime_type)
   else if(owner == w)
   {
     // TODO(k): we can use callback to retrieve the data
+    ret = os_lnx_gfx_state->clip_text;
   }
   else
   {
@@ -298,6 +299,52 @@ os_lnx_get_selection_data(Arena *arena, Atom selection_type, char *mime_type)
 #endif
 }
 
+internal void
+os_lnx_handle_selection_request(XEvent ev)
+{
+  if(ev.type != SelectionRequest) return;
+
+  XSelectionRequestEvent *req = &ev.xselectionrequest;
+  XEvent res = {0};
+  res.xselection.type = SelectionNotify;
+  res.xselection.display = req->display;
+  res.xselection.requestor = req->requestor;
+  res.xselection.selection = req->selection;
+  res.xselection.target = req->target;
+  res.xselection.time = req->time;
+
+  // unpack atoms
+  Atom targets   = os_lnx_gfx_state->atom.TARGETS;
+  Atom utf8      = os_lnx_gfx_state->atom.UTF8_STRING;
+  Atom text_atom = os_lnx_gfx_state->atom.STRING;
+  Atom atom      = os_lnx_gfx_state->atom.ATOM;
+
+  Display *dpy = os_lnx_gfx_state->display;
+  if(req->target == targets)
+  {
+    Atom list[2] = {utf8, text_atom};
+    XChangeProperty(dpy, req->requestor,
+                    req->property, atom, 32,
+                    PropModeReplace,
+                    (unsigned char*)list, 2);
+    res.xselection.property = req->property;
+  }
+  else if(req->target == utf8 || req->target == text_atom) {
+    XChangeProperty(dpy, req->requestor,
+                    req->property, req->target, 8,
+                    PropModeReplace,
+                    (unsigned char*)os_lnx_gfx_state->clip_text.str, os_lnx_gfx_state->clip_text.size);
+    res.xselection.property = req->property;
+  }
+  else
+  {
+    // unsupported target
+    res.xselection.property = None;
+  }
+  XSendEvent(dpy, req->requestor, False, 0, &res);
+  XFlush(dpy);
+}
+
 ////////////////////////////////
 //~ rjf: @os_hooks Main Initialization API (Implemented Per-OS)
 
@@ -317,6 +364,10 @@ os_gfx_init(void)
   os_lnx_gfx_state->selection_data_atom          = XInternAtom(os_lnx_gfx_state->display, "XSEL_DATA", 0);
   os_lnx_gfx_state->atom.INCR                    = XInternAtom(os_lnx_gfx_state->display, "INCR", 0);
   os_lnx_gfx_state->atom.CLIPBOARD               = XInternAtom(os_lnx_gfx_state->display, "CLIPBOARD", 0);
+  os_lnx_gfx_state->atom.TARGETS                 = XInternAtom(os_lnx_gfx_state->display, "TARGETS", 0);
+  os_lnx_gfx_state->atom.UTF8_STRING             = XInternAtom(os_lnx_gfx_state->display, "UTF8_STRING", 0);
+  os_lnx_gfx_state->atom.STRING                  = XInternAtom(os_lnx_gfx_state->display, "STRING", 0);
+  os_lnx_gfx_state->atom.ATOM                    = XInternAtom(os_lnx_gfx_state->display, "ATOM", 0);
   
   //- rjf: open im
   os_lnx_gfx_state->xim = XOpenIM(os_lnx_gfx_state->display, 0, 0, 0);
@@ -369,7 +420,12 @@ os_get_gfx_info(void)
 internal void
 os_set_clipboard_text(String8 string)
 {
-  
+  U64 size = ClampBot(string.size, ArrayCount(os_lnx_gfx_state->clipboard));
+  if(size > 0) MemoryCopy(os_lnx_gfx_state->clipboard, string.str, size);
+  os_lnx_gfx_state->clip_text.str = (U8*)os_lnx_gfx_state->clipboard;
+  os_lnx_gfx_state->clip_text.size = size;
+  Window win = os_lnx_gfx_state->first_window->window;
+  XSetSelectionOwner(os_lnx_gfx_state->display, os_lnx_gfx_state->atom.CLIPBOARD, win, CurrentTime);
 }
 
 internal String8
@@ -1001,6 +1057,10 @@ os_get_events(Arena *arena, B32 wait)
             XSyncSetCounter(os_lnx_gfx_state->display, window->counter_xid, value);
           }
         }
+      }break;
+      case SelectionRequest:
+      {
+        os_lnx_handle_selection_request(evt);
       }break;
     }
   }
