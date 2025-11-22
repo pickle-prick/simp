@@ -420,7 +420,7 @@ os_get_gfx_info(void)
 internal void
 os_set_clipboard_text(String8 string)
 {
-  U64 size = ClampBot(string.size, ArrayCount(os_lnx_gfx_state->clipboard));
+  U64 size = Clamp(0, string.size, ArrayCount(os_lnx_gfx_state->clipboard));
   if(size > 0) MemoryCopy(os_lnx_gfx_state->clipboard, string.str, size);
   os_lnx_gfx_state->clip_text.str = (U8*)os_lnx_gfx_state->clipboard;
   os_lnx_gfx_state->clip_text.size = size;
