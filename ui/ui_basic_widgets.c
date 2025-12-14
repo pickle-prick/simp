@@ -351,7 +351,12 @@ ui_line_edit(TxtPt *cursor, TxtPt *mark, U8 *edit_buffer, U64 edit_buffer_size, 
     {
       F32 total_text_width = fnt_dim_from_tag_size_string(box->font, box->font_size, 0, box->tab_size, edit_string).x;
       ui_set_next_pref_width(ui_px(total_text_width, 1.f));
-      UI_Box *editstr_box = ui_build_box_from_stringf(UI_BoxFlag_DrawText|UI_BoxFlag_DisableTextTrunc, "###editstr");
+      UI_Box *editstr_box;
+      UI_TextAlignment(UI_TextAlign_Left)
+        UI_Palette(ui_build_palette(ui_top_palette(), .border = ik_rgba_from_theme_color(IK_ThemeColor_BaseBackground),
+                                                      .text = v4f32(1,1,1,1.0),
+                                                      .background = ik_rgba_from_theme_color(IK_ThemeColor_Breakpoint)))
+        editstr_box = ui_build_box_from_stringf(UI_BoxFlag_DrawText|UI_BoxFlag_DisableTextTrunc, "###editstr");
       UI_LineEditDrawData *draw_data = push_array(ui_build_arena(), UI_LineEditDrawData, 1);
       {
         draw_data->edited_string = push_str8_copy(ui_build_arena(), edit_string);
