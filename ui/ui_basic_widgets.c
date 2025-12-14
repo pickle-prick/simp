@@ -198,6 +198,7 @@ struct UI_LineEditDrawData
   TxtPt   cursor;
   TxtPt   mark;
   Rng2F32 parent_rect;
+  B32     trail;
 };
 
 internal UI_BOX_CUSTOM_DRAW(ui_line_edit_draw)
@@ -210,11 +211,14 @@ internal UI_BOX_CUSTOM_DRAW(ui_line_edit_draw)
   cursor_color.w *= box->parent->parent->focus_active_t;
   Vec4F32 select_color = box->palette->colors[UI_ColorCode_Selection];
   select_color.w *= (box->parent->parent->focus_active_t*0.2f + 0.8f);
+  Vec4F32 trail_color = cursor_color;
+  trail_color.w *= 0.25f;
   Vec2F32 text_position = ui_box_text_position(box);
   String8 edited_string = draw_data->edited_string;
   TxtPt cursor = draw_data->cursor;
   TxtPt mark = draw_data->mark;
   F32 cursor_pixel_off = fnt_dim_from_tag_size_string(font, font_size, 0, tab_size, str8_prefix(edited_string, cursor.column-1)).x;
+  F32 cursor_pixel_off__animated = ui_anim(ui_key_from_stringf(box->key, "cursor_off_px"), cursor_pixel_off);
   F32 mark_pixel_off   = fnt_dim_from_tag_size_string(font, font_size, 0, tab_size, str8_prefix(edited_string, mark.column-1)).x;
   F32 cursor_thickness = ClampBot(6.f, font_size/10.f);
   Rng2F32 cursor_rect =
@@ -224,6 +228,14 @@ internal UI_BOX_CUSTOM_DRAW(ui_line_edit_draw)
     text_position.x + cursor_pixel_off + cursor_thickness*0.50f,
     box->rect.y1-4.f,
   };
+  Rng1F32 trail_off_span = r1f32(cursor_pixel_off, cursor_pixel_off__animated);
+  Rng2F32 trail_rect =
+  {
+    text_position.x + trail_off_span.min,
+    cursor_rect.y0,
+    text_position.x + trail_off_span.max,
+    cursor_rect.y1,
+  };
   Rng2F32 mark_rect =
   {
     text_position.x + mark_pixel_off - cursor_thickness*0.50f,
@@ -232,8 +244,22 @@ internal UI_BOX_CUSTOM_DRAW(ui_line_edit_draw)
     box->rect.y1-2.f,
   };
   Rng2F32 select_rect = union_2f32(cursor_rect, mark_rect);
-  dr_rect(select_rect, select_color, font_size/6.f, 0, 1.f);
+  dr_rect(select_rect, select_color, font_size/4.f, 0, 1.f);
   dr_rect(cursor_rect, cursor_color, 0.f, 0, 1.f);
+  if(draw_data->trail)
+  {
+    R_Rect2DInst *trail_inst = dr_rect(trail_rect, trail_color, ui_top_font_size()*0.2f, 0, 1.f);
+    if(cursor_pixel_off > cursor_pixel_off__animated)
+    {
+      trail_inst->colors[Corner_00].w *= 0.1f;
+      trail_inst->colors[Corner_01].w *= 0.1f;
+    }
+    else
+    {
+      trail_inst->colors[Corner_10].w *= 0.1f;
+      trail_inst->colors[Corner_11].w *= 0.1f;
+    }
+  }
 }
 
 internal UI_Signal
@@ -247,7 +273,6 @@ ui_line_edit(TxtPt *cursor, TxtPt *mark, U8 *edit_buffer, U64 edit_buffer_size, 
   B32 is_auto_focus_active = ui_is_key_auto_focus_active(key);
   ui_push_focus_hot(is_auto_focus_hot ? UI_FocusKind_On : UI_FocusKind_Null);
   ui_push_focus_active(is_auto_focus_active ? UI_FocusKind_On : UI_FocusKind_Null);
-
   B32 is_focus_hot    = ui_is_focus_hot();
   B32 is_focus_active = ui_is_focus_active();
   B32 is_focus_hot_disabled = (!is_focus_hot && ui_top_focus_hot() == UI_FocusKind_On);
@@ -256,12 +281,13 @@ ui_line_edit(TxtPt *cursor, TxtPt *mark, U8 *edit_buffer, U64 edit_buffer_size, 
   ui_set_next_hover_cursor(is_focus_active ? OS_Cursor_IBar : OS_Cursor_HandPoint);
   // build top-level box
   UI_Box *box = ui_build_box_from_key(UI_BoxFlag_DrawBackground|
-      UI_BoxFlag_DrawBorder|
-      UI_BoxFlag_MouseClickable|
-      UI_BoxFlag_ClickToFocus|
-      UI_BoxFlag_KeyboardClickable|
-      UI_BoxFlag_DrawHotEffects,
-      key);
+                                      UI_BoxFlag_DrawBorder|
+                                      UI_BoxFlag_MouseClickable|
+                                      UI_BoxFlag_ClickToFocus|
+                                      ((is_auto_focus_hot || is_auto_focus_active)*UI_BoxFlag_KeyboardClickable)|
+                                      UI_BoxFlag_DrawHotEffects|
+                                      (is_focus_active || is_focus_active_disabled)*(UI_BoxFlag_Clip|UI_BoxFlag_AllowOverflowX|UI_BoxFlag_ViewClamp),
+                                      key);
 
   // take navigation actions for editing
   if(is_focus_active)
@@ -290,6 +316,12 @@ ui_line_edit(TxtPt *cursor, TxtPt *mark, U8 *edit_buffer, U64 edit_buffer_size, 
         edit_string_size_out[0] = new_string.size;
       }
 
+      // perform copy
+      if(op.flags & UI_TxtOpFlag_Copy)
+      {
+        os_set_clipboard_text(op.copy);
+      }
+
       // commit op's changed cursor & mark to caller-provided state
       *cursor = op.cursor;
       *mark = op.mark;
@@ -302,6 +334,7 @@ ui_line_edit(TxtPt *cursor, TxtPt *mark, U8 *edit_buffer, U64 edit_buffer_size, 
 
   // build contents
   TxtPt mouse_pt = {0};
+  F32 cursor_off = 0;
   UI_Parent(box)
   {
     String8 edit_string = str8(edit_buffer, edit_string_size_out[0]);
@@ -325,37 +358,34 @@ ui_line_edit(TxtPt *cursor, TxtPt *mark, U8 *edit_buffer, U64 edit_buffer_size, 
         draw_data->cursor        = *cursor;
         draw_data->mark          = *mark;
         draw_data->parent_rect   = box->rect;
+        draw_data->trail         = 1;
       }
       ui_box_equip_display_string(editstr_box, edit_string);
       ui_box_equip_custom_draw(editstr_box, ui_line_edit_draw, draw_data);
       mouse_pt = txt_pt(1, 1+ui_box_char_pos_from_xy(editstr_box, ui_mouse()));
+      cursor_off = fnt_dim_from_tag_size_string(ui_top_font(), ui_top_font_size(), 0, ui_top_tab_size(), str8_prefix(edit_string, cursor->column-1)).x;
     }
   }
 
   // interact
   UI_Signal sig = ui_signal_from_box(box);
-
   if(!is_focus_active && sig.f&(UI_SignalFlag_DoubleClicked|UI_SignalFlag_KeyboardPressed))
   {
     String8 edit_string = pre_edit_value;
     edit_string.size = Min(edit_buffer_size, pre_edit_value.size);
     MemoryCopy(edit_buffer, edit_string.str, edit_string.size);
     edit_string_size_out[0] = edit_string.size;
-
     ui_set_auto_focus_active_key(key);
     ui_kill_action();
-
     // Select all text after actived
     *cursor = txt_pt(1, edit_string.size+1);
     *mark = txt_pt(1, 1);
   }
-
   if(is_focus_active && sig.f&UI_SignalFlag_KeyboardPressed) 
   {
     ui_set_auto_focus_active_key(ui_key_zero());
     sig.f |= UI_SignalFlag_Commit;
   }
-
   if(is_focus_active && ui_dragging(sig)) 
   {
     // Update mouse ptr
@@ -366,8 +396,7 @@ ui_line_edit(TxtPt *cursor, TxtPt *mark, U8 *edit_buffer, U64 edit_buffer_size, 
     *cursor = mouse_pt;
   }
 
-  // TODO: fix it later, dragging will override the cursor position
-  if(is_focus_active && sig.f&UI_SignalFlag_DoubleClicked) 
+  if(is_focus_active && sig.f&UI_SignalFlag_DoubleClicked)
   {
     String8 edit_string = str8(edit_buffer, edit_string_size_out[0]);
     *cursor = txt_pt(1, edit_string.size+1);
@@ -375,14 +404,24 @@ ui_line_edit(TxtPt *cursor, TxtPt *mark, U8 *edit_buffer, U64 edit_buffer_size, 
     ui_kill_action();
   }
 
-  // Focus cursor
+  // focus cursor
   {
-    // TODO
+    Rng1F32 cursor_range_px  = r1f32(cursor_off-ui_top_font_size()*2.f, cursor_off+ui_top_font_size()*2.f);
+    Rng1F32 visible_range_px = r1f32(box->view_off_target.x, box->view_off_target.x + dim_2f32(box->rect).x);
+    cursor_range_px.min = ClampBot(0, cursor_range_px.min);
+    cursor_range_px.max = ClampBot(0, cursor_range_px.max);
+    F32 min_delta = cursor_range_px.min-visible_range_px.min;
+    F32 max_delta = cursor_range_px.max-visible_range_px.max;
+    min_delta = Min(min_delta, 0);
+    max_delta = Max(max_delta, 0);
+    box->view_off_target.x += min_delta;
+    box->view_off_target.x += max_delta;
   }
 
-  // Pop focus
+  // pop focus
   ui_pop_focus_hot();
   ui_pop_focus_active();
+
   return sig;
 }
 

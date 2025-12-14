@@ -527,9 +527,9 @@ ui_begin_build(OS_Handle os_wnd, UI_EventList *events, UI_IconInfo *icon_info, U
     ui_set_next_child_layout_axis(Axis2_X);
 
     // TODO: move this to a dedicated root box
-    ui_set_next_focus_hot(UI_FocusKind_On);
-    ui_set_next_focus_active(UI_FocusKind_On);
-    ui_set_next_flags(UI_BoxFlag_DefaultFocusNav);
+    // ui_set_next_focus_hot(UI_FocusKind_On);
+    // ui_set_next_focus_active(UI_FocusKind_On);
+    // ui_set_next_flags(UI_BoxFlag_DefaultFocusNav);
 
     UI_Box *root = ui_build_box_from_stringf(0, "###%I64x", os_wnd.u64[0]);
     ui_push_parent(root);
@@ -2130,7 +2130,7 @@ ui_single_line_txt_op_from_event(Arena *arena, UI_Event *event, String8 string, 
     }break;
     case UI_EventDeltaUnit_Word:
     {
-      NotImplemented;
+      // NotImplemented;
     }break;
     case UI_EventDeltaUnit_Line:
     case UI_EventDeltaUnit_Whole:
