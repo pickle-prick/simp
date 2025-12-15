@@ -350,7 +350,8 @@ ui_line_edit(TxtPt *cursor, TxtPt *mark, U8 *edit_buffer, U64 edit_buffer_size, 
     else
     {
       F32 total_text_width = fnt_dim_from_tag_size_string(box->font, box->font_size, 0, box->tab_size, edit_string).x;
-      ui_set_next_pref_width(ui_px(total_text_width, 1.f));
+      // ui_set_next_pref_width(ui_px(total_text_width, 1.f));
+      ui_set_next_pref_width(ui_px(total_text_width+ui_top_font_size()/2.0, 1.f));
       UI_Box *editstr_box;
       UI_TextAlignment(UI_TextAlign_Left)
         UI_Palette(ui_build_palette(ui_top_palette(), .border = ik_rgba_from_theme_color(IK_ThemeColor_BaseBackground),
