@@ -1071,65 +1071,65 @@ ui_scroll_list_begin(UI_ScrollListParams *params, UI_ScrollPt *scroll_pt, Vec2S6
   B32 moved = 0;
   if(params->flags & UI_ScrollListFlag_Nav && cursor_out != 0 && ui_is_focus_active())
   {
-    // Vec2S64 cursor = *cursor_out;
-    // Vec2S64 mark = mark_out ? *mark_out : cursor;
-    // for(UI_Event *evt = 0; ui_next_event(&evt);)
-    // {
-    //   if((evt->delta_2s32.x == 0 && evt->delta_2s32.y == 0) ||
-    //      evt->flags & UI_EventFlag_Delete)
-    //   {
-    //     continue;
-    //   }
-    //   ui_eat_event(evt);
-    //   moved = 1;
-    //   switch(evt->delta_unit)
-    //   {
-    //     default:{moved = 0;}break;
-    //     case UI_EventDeltaUnit_Char:
-    //     {
-    //       for(Axis2 axis = (Axis2)0; axis < Axis2_COUNT; axis = (Axis2)(axis+1))
-    //       {
-    //         cursor.v[axis] += evt->delta_2s32.v[axis];
-    //         if(cursor.v[axis] < params->cursor_range.min.v[axis])
-    //         {
-    //           cursor.v[axis] = params->cursor_range.max.v[axis];
-    //         }
-    //         if(cursor.v[axis] > params->cursor_range.max.v[axis])
-    //         {
-    //           cursor.v[axis] = params->cursor_range.min.v[axis];
-    //         }
-    //         cursor.v[axis] = clamp_1s64(r1s64(params->cursor_range.min.v[axis], params->cursor_range.max.v[axis]), cursor.v[axis]);
-    //       }
-    //     }break;
-    //     case UI_EventDeltaUnit_Word:
-    //     case UI_EventDeltaUnit_Line:
-    //     case UI_EventDeltaUnit_Page:
-    //     {
-    //       cursor.x  = (evt->delta_2s32.x>0 ? params->cursor_range.max.x : evt->delta_2s32.x<0 ? params->cursor_range.min.x + !!params->cursor_min_is_empty_selection[Axis2_X] : cursor.x);
-    //       cursor.y += ((evt->delta_2s32.y>0 ? +(num_possible_visible_rows-3) : evt->delta_2s32.y<0 ? -(num_possible_visible_rows-3) : 0));
-    //       cursor.y = clamp_1s64(r1s64(params->cursor_range.min.y + !!params->cursor_min_is_empty_selection[Axis2_Y], params->cursor_range.max.y), cursor.y);
-    //     }break;
-    //     case UI_EventDeltaUnit_Whole:
-    //     {
-    //       for(Axis2 axis = (Axis2)0; axis < Axis2_COUNT; axis = (Axis2)(axis+1))
-    //       {
-    //         cursor.v[axis] = (evt->delta_2s32.v[axis]>0 ? params->cursor_range.max.v[axis] : evt->delta_2s32.v[axis]<0 ? params->cursor_range.min.v[axis] + !!params->cursor_min_is_empty_selection[axis] : cursor.v[axis]);
-    //       }
-    //     }break;
-    //   }
-    //   if(!(evt->flags & UI_EventFlag_KeepMark))
-    //   {
-    //     mark = cursor;
-    //   }
-    // }
-    // if(moved)
-    // {
-    //   *cursor_out = cursor;
-    //   if(mark_out)
-    //   {
-    //     *mark_out = mark;
-    //   }
-    // }
+    Vec2S64 cursor = *cursor_out;
+    Vec2S64 mark = mark_out ? *mark_out : cursor;
+    for(UI_Event *evt = 0; ui_next_event(&evt);)
+    {
+      if((evt->delta_2s32.x == 0 && evt->delta_2s32.y == 0) ||
+         evt->flags & UI_EventFlag_Delete)
+      {
+        continue;
+      }
+      ui_eat_event(evt);
+      moved = 1;
+      switch(evt->delta_unit)
+      {
+        default:{moved = 0;}break;
+        case UI_EventDeltaUnit_Char:
+        {
+          for(Axis2 axis = (Axis2)0; axis < Axis2_COUNT; axis = (Axis2)(axis+1))
+          {
+            cursor.v[axis] += evt->delta_2s32.v[axis];
+            if(cursor.v[axis] < params->cursor_range.min.v[axis])
+            {
+              cursor.v[axis] = params->cursor_range.max.v[axis];
+            }
+            if(cursor.v[axis] > params->cursor_range.max.v[axis])
+            {
+              cursor.v[axis] = params->cursor_range.min.v[axis];
+            }
+            cursor.v[axis] = clamp_1s64(r1s64(params->cursor_range.min.v[axis], params->cursor_range.max.v[axis]), cursor.v[axis]);
+          }
+        }break;
+        case UI_EventDeltaUnit_Word:
+        case UI_EventDeltaUnit_Line:
+        case UI_EventDeltaUnit_Page:
+        {
+          cursor.x  = (evt->delta_2s32.x>0 ? params->cursor_range.max.x : evt->delta_2s32.x<0 ? params->cursor_range.min.x + !!params->cursor_min_is_empty_selection[Axis2_X] : cursor.x);
+          cursor.y += ((evt->delta_2s32.y>0 ? +(num_possible_visible_rows-3) : evt->delta_2s32.y<0 ? -(num_possible_visible_rows-3) : 0));
+          cursor.y = clamp_1s64(r1s64(params->cursor_range.min.y + !!params->cursor_min_is_empty_selection[Axis2_Y], params->cursor_range.max.y), cursor.y);
+        }break;
+        case UI_EventDeltaUnit_Whole:
+        {
+          for(Axis2 axis = (Axis2)0; axis < Axis2_COUNT; axis = (Axis2)(axis+1))
+          {
+            cursor.v[axis] = (evt->delta_2s32.v[axis]>0 ? params->cursor_range.max.v[axis] : evt->delta_2s32.v[axis]<0 ? params->cursor_range.min.v[axis] + !!params->cursor_min_is_empty_selection[axis] : cursor.v[axis]);
+          }
+        }break;
+      }
+      if(!(evt->flags & UI_EventFlag_KeepMark))
+      {
+        mark = cursor;
+      }
+    }
+    if(moved)
+    {
+      *cursor_out = cursor;
+      if(mark_out)
+      {
+        *mark_out = mark;
+      }
+    }
   }
 
   //- rjf: moved -> snap
