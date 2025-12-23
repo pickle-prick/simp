@@ -1054,7 +1054,6 @@ ui_scroll_bar(Axis2 axis, UI_Size off_axis_size, UI_ScrollPt pt, Rng1S64 idx_ran
   return new_pt;
 }
 
-// TODO(k): this setup won't support nested scroll list
 thread_static UI_ScrollPt *ui_scroll_list_scroll_pt_ptr = 0;
 thread_static F32 ui_scroll_list_scroll_bar_dim_px = 0;
 thread_static Vec2F32 ui_scroll_list_dim_px = {0};
@@ -1235,6 +1234,187 @@ ui_scroll_list_end(void)
       ui_scroll_pt_target_idx(ui_scroll_list_scroll_pt_ptr, new_idx);
     }
     ui_scroll_pt_clamp_idx(ui_scroll_list_scroll_pt_ptr, ui_scroll_list_scroll_idx_rng);
+  }
+}
+
+thread_static F32 ui_scroll_area_scroll_bar_dim_px = 0;
+thread_static Vec2F32 ui_scroll_area_dim_px = {0};
+
+internal void
+ui_scroll_area_begin(String8 string, UI_ScrollAreaParams *params)
+{
+  //- k: build top-level container
+  UI_Box *container_box;
+  UI_FixedWidth(params->dim_px.x)
+    UI_FixedHeight(params->dim_px.y)
+    UI_Flags(UI_BoxFlag_DrawBackground)
+    UI_ChildLayoutAxis(Axis2_X)
+  {
+    container_box = ui_build_box_from_string(0, string);
+  }
+
+  //- k: store thread-locals
+  ui_scroll_area_scroll_bar_dim_px = ui_top_font_size()*0.9f;
+  ui_scroll_area_dim_px = params->dim_px;
+
+  //- k: build scrollable container
+  UI_Box *scrollable_container_box;
+  UI_Parent(container_box)
+    UI_ChildLayoutAxis(Axis2_Y)
+    UI_Flags(UI_BoxFlag_Clip|UI_BoxFlag_AllowOverflowY|UI_BoxFlag_Scroll)
+    UI_FixedWidth(params->dim_px.x-ui_scroll_area_scroll_bar_dim_px)
+    UI_FixedHeight(ui_scroll_area_dim_px.y)
+  {
+    scrollable_container_box = ui_build_box_from_stringf(0, "###sp");
+  }
+
+  //- k: build vertical scroll bar
+  UI_Parent(container_box)
+  {
+    ui_push_palette(ui_state->widget_palette_info.scrollbar_palette);
+
+    // main container
+    ui_set_next_fixed_width(ui_scroll_area_scroll_bar_dim_px);
+    ui_set_next_fixed_height(ui_scroll_area_dim_px.y);
+    ui_set_next_flags(UI_BoxFlag_DrawDropShadow|UI_BoxFlag_DrawBorder);
+    UI_Box *scroll_bar_container;
+    UI_ChildLayoutAxis(Axis2_Y)
+    {
+      scroll_bar_container = ui_build_box_from_stringf(0, "###sb");
+    }
+
+    // scroll-min button
+    UI_Signal min_scroll_sig;
+    UI_Parent(scroll_bar_container)
+      UI_PrefHeight(ui_px(ui_top_font_size()*0.9, 1.0))
+      UI_Flags(UI_BoxFlag_DrawBorder)
+      UI_TextAlignment(UI_TextAlign_Center)
+      UI_TextPadding(0.1f)
+      UI_Font(ui_icon_font())
+    {
+      String8 arrow_string = ui_icon_string_from_kind(UI_IconKind_UpArrow);
+      min_scroll_sig = ui_buttonf("%S##_min_scroll", arrow_string);
+    }
+
+    // main scroll area
+    UI_Signal space_before_sig;
+    UI_Signal scroller_sig;
+    UI_Signal space_after_sig;
+    UI_Box *scroll_area_box;
+    UI_Box *scroller_box;
+    UI_Parent(scroll_bar_container)
+    {
+      ui_set_next_pref_height(ui_pct(1.0, 0.0));
+      ui_set_next_child_layout_axis(Axis2_Y);
+      scroll_area_box = ui_build_box_from_stringf(0, "##_scroll_area");
+
+      Vec2F32 view_off = scrollable_container_box->view_off;
+      Vec2F32 view_bounds = scrollable_container_box->view_bounds;
+      Vec2F32 viewport_dim = params->dim_px;
+
+      // decide pct
+      // FIXME: we could be dividing by 0
+      F32 space_before_pct = view_off.y/view_bounds.y;
+      space_before_pct = Clamp(0, space_before_pct, 1.0);
+      F32 viewport_pct = viewport_dim.y/view_bounds.y;
+      viewport_pct = Clamp(0.0, viewport_pct, 1.0);
+      F32 space_after_pct = 1.0-space_before_pct-viewport_pct;
+      space_after_pct = Clamp(0, space_after_pct, 1.0);
+
+      UI_Parent(scroll_area_box)
+      {
+        // space before
+        // if(space_before_pct > 0)
+        {
+          ui_set_next_pref_height(ui_pct(space_before_pct, 0.0));
+          ui_set_next_hover_cursor(OS_Cursor_HandPoint);
+          UI_Box *space_before_box = ui_build_box_from_stringf(UI_BoxFlag_Clickable, "##scroll_area_before");
+          space_before_sig = ui_signal_from_box(space_before_box);
+        }
+
+        // scroller
+        UI_Flags(0) UI_PrefHeight(ui_pct(viewport_pct, 0.0))
+        {
+          scroller_sig = ui_buttonf("##_scroller");
+          scroller_box = scroller_sig.box;
+        }
+
+        // space after
+        // if(space_before_pct > 0)
+        {
+          ui_set_next_pref_height(ui_pct(space_after_pct, 0.0));
+          ui_set_next_hover_cursor(OS_Cursor_HandPoint);
+          UI_Box *space_after_box = ui_build_box_from_stringf(UI_BoxFlag_Clickable, "##scroll_area_after");
+          space_after_sig = ui_signal_from_box(space_after_box);
+        }
+      }
+    }
+
+    // scroll-max button
+    UI_Signal max_scroll_sig;
+    UI_Parent(scroll_bar_container)
+      UI_PrefHeight(ui_px(ui_top_font_size()*0.9, 1.0))
+      UI_Flags(UI_BoxFlag_DrawBorder)
+      UI_TextAlignment(UI_TextAlign_Center)
+      UI_TextPadding(0.1f)
+      UI_Font(ui_icon_font())
+    {
+      String8 arrow_string = ui_icon_string_from_kind(UI_IconKind_DownArrow);
+      max_scroll_sig = ui_buttonf("%S##_max_scroll", arrow_string);
+    }
+
+    // interaction
+    {
+      typedef struct UI_ScrollBarDragData UI_ScrollBarDragData;
+      struct UI_ScrollBarDragData
+      {
+        F32 start_view_off;
+        // F32 scroll_space_px;
+      };
+      if(ui_dragging(scroller_sig))
+      {
+        if(ui_pressed(scroller_sig))
+        {
+          UI_ScrollBarDragData drag_data = {scrollable_container_box->view_off.y};
+          ui_store_drag_struct(&drag_data);
+        }
+
+        UI_ScrollBarDragData *drag_data = ui_get_drag_struct(UI_ScrollBarDragData);
+        F32 drag_delta = ui_drag_delta().v[Axis2_Y];
+        scrollable_container_box->view_off.y = drag_data->start_view_off + drag_delta;
+        // F32 scroll_min = 0;
+        // F32 scroll_max = scrollable_container_box->view_bounds.y - ui_scroll_area_dim_px.y;
+        // scroll_max = ClampBot(0, scroll_max);
+        scrollable_container_box->view_off_target.y = scrollable_container_box->view_off.y;
+      }
+    }
+    
+    ui_pop_palette();
+  }
+
+  //- k: begin scrollable area
+  ui_push_parent(container_box);
+  ui_push_parent(scrollable_container_box);
+}
+
+internal void
+ui_scroll_area_end()
+{
+  UI_Box *scrollable_container_box = ui_pop_parent();
+  UI_Box *container_box = ui_pop_parent();
+
+  //- k: scroll
+  {
+    UI_Signal sig = ui_signal_from_box(scrollable_container_box);
+    if(sig.scroll.y != 0)
+    {
+      F32 view_offy_delta = sig.scroll.y*ui_top_font_size()*2.f;
+      scrollable_container_box->view_off_target.y += view_offy_delta;
+      F32 scroll_min = 0;
+      F32 scroll_max = scrollable_container_box->view_bounds.y - ui_scroll_area_dim_px.y;
+      scroll_max = ClampBot(0, scroll_max);
+      scrollable_container_box->view_off_target.y = Clamp(scroll_min, scrollable_container_box->view_off_target.y, scroll_max);
+    }
   }
 }
 

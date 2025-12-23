@@ -65,6 +65,12 @@ struct UI_ScrollListSignal
   B32 cursor_moved;
 };
 
+typedef struct UI_ScrollAreaParams UI_ScrollAreaParams;
+struct UI_ScrollAreaParams
+{
+  Vec2F32 dim_px;
+};
+
 ////////////////////////////////
 //~ rjf: Basic Widgets
 
@@ -154,6 +160,9 @@ internal UI_Signal ui_pane_end(void);
 internal UI_ScrollPt ui_scroll_bar(Axis2 axis, UI_Size off_axis_size, UI_ScrollPt pt, Rng1S64 idx_range, S64 view_num_indices);
 internal void ui_scroll_list_begin(UI_ScrollListParams *params, UI_ScrollPt *scroll_pt_out, Vec2S64 *cursor_out, Vec2S64 *mark_out, Rng1S64 *visible_row_range_out, UI_ScrollListSignal *signal_out);
 internal void ui_scroll_list_end(void);
+
+internal void ui_scroll_area_begin(String8 String, UI_ScrollAreaParams *params);
+internal void ui_scroll_area_end(void);
 
 ////////////////////////////////
 //~ rjf: Macro Loop Wrappers
