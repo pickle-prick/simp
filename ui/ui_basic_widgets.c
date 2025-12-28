@@ -1,7 +1,8 @@
 internal UI_Signal
 ui_button(String8 string)
 {
-  ui_set_next_hover_cursor(OS_Cursor_HandPoint);
+  // ui_set_next_hover_cursor(OS_Cursor_HandPoint);
+  ui_set_next_hover_cursor(OS_Cursor_Pointer);
   UI_Box *box = ui_build_box_from_string(UI_BoxFlag_Clickable|
                                          UI_BoxFlag_DrawBackground|
                                          UI_BoxFlag_DrawBorder|
@@ -1256,6 +1257,8 @@ ui_scroll_area_begin(String8 string, UI_ScrollAreaParams *params)
   //- k: store thread-locals
   ui_scroll_area_scroll_bar_dim_px = ui_top_font_size()*0.9f;
   ui_scroll_area_dim_px = params->dim_px;
+  F32 scroll_button_y_px = ui_top_font_size()*0.9;
+  F32 scroll_track_y_px = ui_scroll_area_dim_px.y - scroll_button_y_px*2;
 
   //- k: build scrollable container
   UI_Box *scrollable_container_box;
@@ -1286,7 +1289,7 @@ ui_scroll_area_begin(String8 string, UI_ScrollAreaParams *params)
     // scroll-min button
     UI_Signal min_scroll_sig;
     UI_Parent(scroll_bar_container)
-      UI_PrefHeight(ui_px(ui_top_font_size()*0.9, 1.0))
+      UI_FixedHeight(scroll_button_y_px)
       UI_Flags(UI_BoxFlag_DrawBorder)
       UI_TextAlignment(UI_TextAlign_Center)
       UI_TextPadding(0.1f)
@@ -1304,7 +1307,7 @@ ui_scroll_area_begin(String8 string, UI_ScrollAreaParams *params)
     UI_Box *scroller_box;
     UI_Parent(scroll_bar_container)
     {
-      ui_set_next_pref_height(ui_pct(1.0, 0.0));
+      ui_set_next_fixed_height(scroll_track_y_px);
       ui_set_next_child_layout_axis(Axis2_Y);
       scroll_area_box = ui_build_box_from_stringf(0, "##_scroll_area");
 
@@ -1327,13 +1330,13 @@ ui_scroll_area_begin(String8 string, UI_ScrollAreaParams *params)
         // if(space_before_pct > 0)
         {
           ui_set_next_pref_height(ui_pct(space_before_pct, 0.0));
-          ui_set_next_hover_cursor(OS_Cursor_HandPoint);
+          ui_set_next_hover_cursor(OS_Cursor_Pointer);
           UI_Box *space_before_box = ui_build_box_from_stringf(UI_BoxFlag_Clickable, "##scroll_area_before");
           space_before_sig = ui_signal_from_box(space_before_box);
         }
 
         // scroller
-        UI_Flags(0) UI_PrefHeight(ui_pct(viewport_pct, 0.0))
+        UI_Flags(0) UI_PrefHeight(ui_pct(viewport_pct, 0.0)) UI_CornerRadius(2.0)
         {
           scroller_sig = ui_buttonf("##_scroller");
           scroller_box = scroller_sig.box;
@@ -1343,7 +1346,7 @@ ui_scroll_area_begin(String8 string, UI_ScrollAreaParams *params)
         // if(space_before_pct > 0)
         {
           ui_set_next_pref_height(ui_pct(space_after_pct, 0.0));
-          ui_set_next_hover_cursor(OS_Cursor_HandPoint);
+          ui_set_next_hover_cursor(OS_Cursor_Pointer);
           UI_Box *space_after_box = ui_build_box_from_stringf(UI_BoxFlag_Clickable, "##scroll_area_after");
           space_after_sig = ui_signal_from_box(space_after_box);
         }
@@ -1353,7 +1356,7 @@ ui_scroll_area_begin(String8 string, UI_ScrollAreaParams *params)
     // scroll-max button
     UI_Signal max_scroll_sig;
     UI_Parent(scroll_bar_container)
-      UI_PrefHeight(ui_px(ui_top_font_size()*0.9, 1.0))
+      UI_FixedHeight(scroll_button_y_px)
       UI_Flags(UI_BoxFlag_DrawBorder)
       UI_TextAlignment(UI_TextAlign_Center)
       UI_TextPadding(0.1f)
@@ -1365,6 +1368,15 @@ ui_scroll_area_begin(String8 string, UI_ScrollAreaParams *params)
 
     // interaction
     {
+      if(ui_clicked(min_scroll_sig))
+      {
+        scrollable_container_box->view_off_target.y = 0;
+      }
+      if(ui_clicked(max_scroll_sig))
+      {
+        scrollable_container_box->view_off_target.y = scrollable_container_box->view_bounds.y-ui_scroll_area_dim_px.y;
+      }
+
       typedef struct UI_ScrollBarDragData UI_ScrollBarDragData;
       struct UI_ScrollBarDragData
       {
@@ -1381,11 +1393,31 @@ ui_scroll_area_begin(String8 string, UI_ScrollAreaParams *params)
 
         UI_ScrollBarDragData *drag_data = ui_get_drag_struct(UI_ScrollBarDragData);
         F32 drag_delta = ui_drag_delta().v[Axis2_Y];
-        scrollable_container_box->view_off.y = drag_data->start_view_off + drag_delta;
-        // F32 scroll_min = 0;
-        // F32 scroll_max = scrollable_container_box->view_bounds.y - ui_scroll_area_dim_px.y;
-        // scroll_max = ClampBot(0, scroll_max);
-        scrollable_container_box->view_off_target.y = scrollable_container_box->view_off.y;
+        F32 drag_delta_pct = drag_delta / scroll_track_y_px;
+        F32 view_off_y = drag_data->start_view_off + drag_delta_pct*scrollable_container_box->view_bounds.y;
+        view_off_y = Clamp(0, view_off_y, scrollable_container_box->view_bounds.y-ui_scroll_area_dim_px.y);
+        scrollable_container_box->view_off.y = scrollable_container_box->view_off_target.y = view_off_y;
+      }
+
+      // clicked on space before or space after
+      {
+        F32 scroll_space_px_delta_y = 0;
+        if(space_before_sig.f&UI_SignalFlag_LeftPressed)
+        {
+          scroll_space_px_delta_y = ui_mouse().y - scroller_sig.box->rect.y0;
+        }
+        if(space_after_sig.f&UI_SignalFlag_LeftPressed)
+        {
+          scroll_space_px_delta_y = ui_mouse().y - scroller_sig.box->rect.y1;
+        }
+
+        if(scroll_space_px_delta_y != 0)
+        {
+          F32 pct = scroll_space_px_delta_y / scroll_track_y_px;
+          F32 view_off_y = scrollable_container_box->view_off.y + pct*scrollable_container_box->view_bounds.y;
+          view_off_y = Clamp(0, view_off_y, scrollable_container_box->view_bounds.y-ui_scroll_area_dim_px.y);
+          scrollable_container_box->view_off_target.y = view_off_y;
+        }
       }
     }
     
