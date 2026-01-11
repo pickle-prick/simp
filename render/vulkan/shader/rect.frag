@@ -1,20 +1,20 @@
 #version 450
 
 // input
-layout(location = 0)  in vec4  position;
-layout(location = 1)  in vec2  rect_half_size_px;
-layout(location = 2)  in vec2  texcoord_pct;
-layout(location = 3)  in vec2  sdf_sample_pos;
-layout(location = 4)  in vec4  tint;
-layout(location = 5)  in float corner_radius_px;
-layout(location = 6)  in float border_thickness_px;
-layout(location = 7)  in float softness_px;
-layout(location = 8)  in float line_thickness_px;
-layout(location = 9)  in float white_texture_override;
-layout(location = 10) in float omit_texture;
-layout(location = 11) in float has_pixel_id;
-layout(location = 12) in vec3  pixel_id;
-layout(location = 13) in vec4  line;
+layout(location = 0)       in vec4  position;
+layout(location = 1)  flat in vec2  rect_half_size_px;
+layout(location = 2)       in vec2  texcoord_pct;
+layout(location = 3)       in vec2  sdf_sample_pos;
+layout(location = 4)       in vec4  tint;
+layout(location = 5)  flat in float corner_radius_px;
+layout(location = 6)  flat in float border_thickness_px;
+layout(location = 7)  flat in float softness_px;
+layout(location = 8)  flat in float line_thickness_px;
+layout(location = 9)  flat in float white_texture_override;
+layout(location = 10) flat in float omit_texture;
+layout(location = 11) flat in float has_pixel_id;
+layout(location = 12) flat in vec3  pixel_id;
+layout(location = 13) flat in vec4  line;
 
 // output
 layout(location = 0) out vec4 out_color;
@@ -78,7 +78,7 @@ void main()
   {
     float border_sdf_s = rect_sdf(sdf_sample_pos,
                                   rect_half_size_px - 2*softness_px - border_thickness_px,
-                                  max(border_thickness_px-corner_radius_px, 0));
+                                  max(corner_radius_px-border_thickness_px, 0));
     border_sdf_t = smoothstep(0, 2*softness_px, border_sdf_s);
   }
 
@@ -99,7 +99,9 @@ void main()
   out_color.a *= corner_sdf_t;
   out_color.a *= line_sdf_t;
 
-  // FIXME: move this into some dedicated color grading pass or just implement 3D LUT
+  ////////////////////////////////
+  // FIXME: move this block into some dedicated color grading pass or just implement 3D LUT
+
   // warmer
   mat3 warm_mat = mat3(
     1.10,  0.05, -0.02,
@@ -111,9 +113,12 @@ void main()
   float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
   c = mix(vec3(lum), c, 0.9);
   // slight fade blacks / lift shadows
-  c = mix(vec3(0.02), c, vec3(0.98));
+  vec3 lift = vec3(0.02)*out_color.a;
+  c = mix(lift, c, vec3(0.98));
   c = clamp(c, 0.0, 1.0);
   out_color.rgb = c;
+
+  ////////////////////////////////
 
   vec4 id = vec4(pixel_id.xyz,1.0);
   if(has_pixel_id == 0.0)

@@ -88,16 +88,19 @@ void main()
   // Output vertex position
   gl_Position = ndc_pos;
 
+  // NOTE(k): assuming uniform scaling
+  float scale_factor = globals.xform_scale.x;
+
   // Output
   frag_position               = ndc_pos;
   frag_rect_half_size_px      = dst_size_px / 2.0f * globals.xform_scale;
   frag_texcoord_pct           = mix(src_p0_px, src_p1_px, pct) / globals.texture_t2d_size;
   frag_sdf_sample_pos         = mix(-frag_rect_half_size_px, frag_rect_half_size_px, pct);
   frag_tint                   = src_colors[gl_VertexIndex];
-  frag_corner_radius_px       = corner_radii_px[gl_VertexIndex];
-  frag_border_thickness_px    = border_thickness_px;
-  frag_softness_px            = softness_px;
-  frag_line_thickness_px      = line_thickness_px;
+  frag_corner_radius_px       = corner_radii_px[gl_VertexIndex] * scale_factor;
+  frag_border_thickness_px    = border_thickness_px * scale_factor;
+  frag_softness_px            = max(softness_px * scale_factor, 0.001);
+  frag_line_thickness_px      = line_thickness_px * scale_factor;
   frag_white_texture_override = white_texture_override;
   frag_omit_texture           = omit_texture;
   frag_has_pixel_id           = has_pixel_id;

@@ -339,7 +339,7 @@ ui_line_edit(TxtPt *cursor, TxtPt *mark, U8 *edit_buffer, U64 edit_buffer_size, 
   UI_Parent(box)
   {
     String8 edit_string = str8(edit_buffer, edit_string_size_out[0]);
-    if(!is_focus_active && box->focus_active_t < 0.001)
+    if(!is_focus_active)
     {
       String8 display_string = ui_display_part_from_key_string(string);
       if(pre_edit_value.size != 0) 
