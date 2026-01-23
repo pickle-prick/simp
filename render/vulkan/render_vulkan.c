@@ -5759,6 +5759,18 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         // We've now told Vulkan which operations to execute in the graphcis pipeline and which attachment to use in the fragment shader
         vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.rect.h);
 
+        VkViewport viewport = {0};
+        viewport.x        = 0.0f;
+        viewport.y        = 0.0f;
+        viewport.width    = render_targets->stage_color_image.extent.width;
+        viewport.height   = render_targets->stage_color_image.extent.height;
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
+
+        VkRect2D last_scissor = {0};
+        R_Vulkan_Tex2D *last_texture = 0;
+
         // unpack inst buffer
         R_Vulkan_Buffer *inst_buffer = &frame->inst_buffer_rect[ui_pass_index];
 
@@ -5770,7 +5782,8 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           R_BatchList *batches = &group_n->batches;
           R_BatchGroupRectParams *group_params = &group_n->params;
 
-          // Get & fill instance bufer
+          // Get & fill instance buffer
+          ProfBegin("Prepare inst buffer");
           U64 inst_buffer_off = inst_idx*sizeof(R_Rect2DInst);
           for(R_BatchNode *batch = batches->first; batch != 0; batch = batch->next)
           {
@@ -5790,15 +5803,22 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
           // Bind instance buffer
           vkCmdBindVertexBuffers(cmd_buf, 0, 1, &inst_buffer->h, &(VkDeviceSize){inst_buffer_off});
+          ProfEnd();
 
           // Get texture
+          ProfBegin("Prepare Texture");
           R_Handle tex_handle = group_params->tex;
           if(r_handle_match(tex_handle, r_handle_zero()))
           {
             tex_handle = r_vulkan_state->backup_texture;
           }
           R_Vulkan_Tex2D *texture = r_vulkan_tex2d_from_handle(tex_handle);
-          vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.rect.layout, 1, 1, &texture->desc_set.h, 0, NULL);
+          if(texture != last_texture)
+          {
+            vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.rect.layout, 1, 1, &texture->desc_set.h, 0, NULL);
+            last_texture = texture;
+          }
+          ProfEnd();
 
           // Set up texture sample map matrix based on texture format
           // Vulkan use col-major
@@ -5824,7 +5844,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
             }break;
           }
 
-          ///////////////////////////////////////////////////////////////////////////////
+          //////////////////////////////// 
           //~ Bind uniform buffer
 
           // Upload uniforms
@@ -5847,15 +5867,6 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           MemoryCopy((U8 *)uniform_buffer->buffer.mapped + uniform_buffer_offset, &uniforms, sizeof(R_Vulkan_UBO_Rect));
           vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.rect.layout, 0, 1, &uniform_buffer->set.h, 1, &uniform_buffer_offset);
 
-          VkViewport viewport = {0};
-          viewport.x        = 0.0f;
-          viewport.y        = 0.0f;
-          viewport.width    = render_targets->stage_color_image.extent.width;
-          viewport.height   = render_targets->stage_color_image.extent.height;
-          viewport.minDepth = 0.0f;
-          viewport.maxDepth = 1.0f;
-          vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
-
           VkRect2D scissor = {0};
           if(group_params->clip.x0 == 0 && group_params->clip.x1 == 0 && group_params->clip.y0 == 0 && group_params->clip.y1 == 0)
           {
@@ -5876,7 +5887,11 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
             scissor.extent = (VkExtent2D){(U32)clip_dim.x, (U32)clip_dim.y};
             Assert(!(clip_dim.x == 0 && clip_dim.y == 0));
           }
-          vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
+          if(!MemoryMatchStruct(&scissor, &last_scissor))
+          {
+            last_scissor = scissor;
+            vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
+          }
 
           U64 inst_count = batches->byte_count / batches->bytes_per_inst;
           vkCmdDraw(cmd_buf, 4, inst_count, 0, 0);
