@@ -107,6 +107,7 @@ r_vulkan_window_resize(R_Vulkan_Window *window)
   Vec2F32 window_dim = dim_2f32(os_client_rect_from_window(window->os_wnd,0));
   U64 last_window_dim_us = os_now_microseconds();
 
+#if 0
   // Handle minimization
   // There is another case where a swapchain may become out of date and that is a special kind of window resizing: window minimization
   // This case is special because it will result in a frame buffer size of 0
@@ -125,6 +126,7 @@ r_vulkan_window_resize(R_Vulkan_Window *window)
     os_get_events(scratch.arena, 0);
     scratch_end(scratch);
   }
+#endif
 
   // NOTE(k): The disadvantage of this approach is that we need to stop all rendering before create the new swap chain
   // It is possible to create a new swapchain while drawing commands on an image from the old swap chain are still in-flight

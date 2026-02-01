@@ -159,6 +159,12 @@ ui_root_from_state(UI_State *state)
   return state->root;
 }
 
+internal B32
+ui_animating_from_state(UI_State *state)
+{
+  return state->is_animating;
+}
+
 internal void
 ui_select_state(UI_State *s)
 {
@@ -440,6 +446,7 @@ ui_begin_build(OS_Handle os_wnd, UI_EventList *events, UI_IconInfo *icon_info, U
     UI_InitStacks(ui_state);
     ui_state->root = &ui_nil_box;
     ui_state->ctx_menu_touched_this_frame = 0;
+    ui_state->is_animating = 0;
     ui_state->default_animation_rate = 1 - pow_f32(2, (-50.f * ui_state->animation_dt));
     ui_state->last_build_box_count = ui_state->build_box_count;
     ui_state->build_box_count = 0;
@@ -779,16 +786,18 @@ ui_end_build(void)
           n = n->slot_next)
       {
         n->current += (n->params.target - n->current) * n->params.rate;
-        // ui_state->is_animating = (ui_state->is_animating || abs_f32(n->params.target - n->current) > n->params.epsilon);
+        ui_state->is_animating = (ui_state->is_animating || abs_f32(n->params.target - n->current) > n->params.epsilon);
       }
     }
 
     ui_state->ctx_menu_open_t += ((F32)!!ui_state->ctx_menu_open - ui_state->ctx_menu_open_t) * ui_state->animation_info.menu_animation_rate;
+    ui_state->is_animating = (ui_state->is_animating || abs_f32((F32)!!ui_state->ctx_menu_open - ui_state->ctx_menu_open_t) > 0.01f);
     if(ui_state->ctx_menu_open_t >= 0.99f && ui_state->ctx_menu_open)
     {
       ui_state->ctx_menu_open_t = 1.f;
     }
     ui_state->tooltip_open_t += ((F32)!!ui_state->tooltip_open - ui_state->tooltip_open_t) * ui_state->animation_info.tooltip_animation_rate;
+    ui_state->is_animating = (ui_state->is_animating || abs_f32((F32)!!ui_state->tooltip_open - ui_state->tooltip_open_t) > 0.01f);
 
     for(U64 slot_idx = 0; slot_idx < ui_state->box_table_size; slot_idx++)
     {
@@ -800,12 +809,33 @@ ui_end_build(void)
 
         B32 is_focus_hot    = !!(b->flags & UI_BoxFlag_FocusHot) && !(b->flags & UI_BoxFlag_FocusHotDisabled);
         B32 is_focus_active = !!(b->flags & UI_BoxFlag_FocusActive) && !(b->flags & UI_BoxFlag_FocusActiveDisabled);
+        B32 is_focus_active_disabled = !!(b->flags & UI_BoxFlag_FocusActiveDisabled);
 
         // determine rates
         F32 hot_rate      = ui_state->animation_info.hot_animation_rate;
         F32 active_rate   = ui_state->animation_info.active_animation_rate;
         F32 disabled_rate = slow_rate;
         F32 focus_rate    = ui_state->animation_info.focus_animation_rate;
+
+        // determine animating status
+        B32 box_is_animating = 0;
+        box_is_animating = (box_is_animating || abs_f32((F32)is_hot          - b->hot_t) > 0.01f);
+        box_is_animating = (box_is_animating || abs_f32((F32)is_active       - b->active_t) > 0.01f);
+        box_is_animating = (box_is_animating || abs_f32((F32)is_disabled     - b->disabled_t) > 0.01f);
+        box_is_animating = (box_is_animating || abs_f32((F32)is_focus_hot    - b->focus_hot_t) > 0.01f);
+        box_is_animating = (box_is_animating || abs_f32((F32)is_focus_active - b->focus_active_t) > 0.01f);
+        box_is_animating = (box_is_animating || abs_f32((F32)is_focus_active_disabled - b->focus_active_disabled_t) > 0.01f);
+        box_is_animating = (box_is_animating || abs_f32(b->view_off_target.x - b->view_off.x) > 0.5f);
+        box_is_animating = (box_is_animating || abs_f32(b->view_off_target.y - b->view_off.y) > 0.5f);
+        if(b->flags & UI_BoxFlag_AnimatePosX)
+        {
+          box_is_animating = (box_is_animating || abs_f32(b->fixed_position_animated.x - b->fixed_position.x) > 0.5f);
+        }
+        if(b->flags & UI_BoxFlag_AnimatePosY)
+        {
+          box_is_animating = (box_is_animating || abs_f32(b->fixed_position_animated.y - b->fixed_position.y) > 0.5f);
+        }
+        ui_state->is_animating = (ui_state->is_animating || box_is_animating);
 
         // Animate interaction transition states
         b->hot_t          += hot_rate * ((F32)is_hot - b->hot_t);
@@ -1214,6 +1244,7 @@ ui_build_box_from_key(UI_BoxFlags flags, UI_Key key)
   if(box_first_frame)
   {
     box = box_is_transient ? 0 : ui_state->first_free_box;
+    ui_state->is_animating = ui_state->is_animating || !box_is_transient;
 
     if(!ui_box_is_nil(box))
     {

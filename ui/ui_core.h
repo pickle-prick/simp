@@ -701,7 +701,7 @@ struct UI_State
   U64                  build_box_count;
   U64                  last_build_box_count;
   B32                  ctx_menu_touched_this_frame;
-  // B32                  is_animating;
+  B32                  is_animating;
 
   // build parameters
   UI_IconInfo          icon_info;
@@ -818,6 +818,7 @@ internal UI_BoxRec ui_box_rec_df(UI_Box *box, UI_Box *root, U64 sib_member_off, 
 internal UI_State *ui_state_alloc(void);
 internal void     ui_state_release(UI_State *state);
 internal UI_Box   *ui_root_from_state(UI_State *state);
+internal B32      ui_animating_from_state(UI_State *state);
 internal void     ui_select_state(UI_State *state);
 
 /////////////////////////////////////////////////////////////////////////////////////////
