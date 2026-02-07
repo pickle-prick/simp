@@ -107,6 +107,8 @@ r_vulkan_window_resize(R_Vulkan_Window *window)
   Vec2F32 window_dim = dim_2f32(os_client_rect_from_window(window->os_wnd,0));
   U64 last_window_dim_us = os_now_microseconds();
 
+  AssertAlways(window_dim.x > 0 && window_dim.y > 0);
+
 #if 0
   // Handle minimization
   // There is another case where a swapchain may become out of date and that is a special kind of window resizing: window minimization
@@ -141,7 +143,7 @@ r_vulkan_window_resize(R_Vulkan_Window *window)
   r_vulkan_surface_update(surface);
 
   // we need to recreate the render targets if either size or format of swapchain is chagned
-  SLLStackPush(r_vulkan_state->first_to_free_render_targets, render_targets);
+  SLLQueuePush(r_vulkan_state->first_to_free_render_targets, r_vulkan_state->last_to_free_render_targets, render_targets);
   render_targets->deprecated_at_frame = r_vulkan_state->frame_index;
   window->render_targets = r_vulkan_render_targets_alloc(window->os_wnd, &window->surface, window->render_targets);
 
@@ -400,7 +402,7 @@ r_vulkan_stage_end()
   // flag batch
   batch->submitted = 1;
   // rotate stage idx
-  stage->idx = stage->idx%R_VULKAN_STAGING_IN_FLIGHT_COUNT;
+  stage->idx = (stage->idx+1)%R_VULKAN_STAGING_IN_FLIGHT_COUNT;
 }
 
 internal void
@@ -709,12 +711,12 @@ r_vulkan_swapchain(R_Vulkan_Surface *surface, OS_Handle os_wnd, VkFormat format,
 
     VK_Assert(vkCreateImageView(r_vulkan_state->logical_device.h, &create_info, NULL, &swapchain.image_views[i]));
     // Unlike images, the image views were explicitly created by us, so we need to add a similar loop to destroy them again at the end of the program
+  }
 
-    // create submit semaphores
-    for(U64 i = 0; i < swapchain.image_count; i++)
-    {
-      swapchain.submit_semaphores[i] = r_vulkan_semaphore(r_vulkan_state->logical_device.h);
-    }
+  // create submit semaphores (one per swapchain image)
+  for(U64 i = 0; i < swapchain.image_count; i++)
+  {
+    swapchain.submit_semaphores[i] = r_vulkan_semaphore(r_vulkan_state->logical_device.h);
   }
   return swapchain;
 }
@@ -5054,7 +5056,7 @@ r_buffer_alloc(R_ResourceKind kind, U64 size, void *data, U64 data_size)
         VK_Assert(vkMapMemory(r_vulkan_state->logical_device.h, staging_memory, 0, mem_requirements.size, 0, &mapped));
         if(data != 0 && data_size >0)
         {
-          MemoryCopy(mapped, data, size);
+          MemoryCopy(mapped, data, data_size);
         }
       }
 
@@ -5103,8 +5105,8 @@ r_buffer_alloc(R_ResourceKind kind, U64 size, void *data, U64 data_size)
               // They must be set to VK_QUEUE_FAMILY_IGNORED if you don't want to do this (not the default value)
               .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
               .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-              .srcAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT,
-              .dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT,
+              .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+              .dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT|VK_ACCESS_INDEX_READ_BIT,
               .buffer = buffer,
               .offset = 0,
               .size = data_size,
@@ -5297,15 +5299,15 @@ r_buffer_copy(R_Handle handle, void *data, U64 size)
         // They must be set to VK_QUEUE_FAMILY_IGNORED if you don't want to do this (not the default value)
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
-        .dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT|VK_ACCESS_INDEX_READ_BIT,
         .buffer = buffer->h,
         .offset = 0,
         .size = size,
       };
       vkCmdPipelineBarrier(cmd,
-          VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
-          0,0, NULL, 1, &barrier, 0, 0);
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                           0,0, NULL, 1, &barrier, 0, 0);
     }break;
     case R_ResourceKind_Stream:
     {
@@ -5386,18 +5388,16 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
   while(1)
   {
     // Acquire image from swapchain
-    // NOTE: this will signal img_acq_sem, so we can't call it in a loop here, we need to use r_vulkan_cleanup_unsafe_semaphore
-    // FIXME: on amd newest driver(windows), this would cause ~2 seconds if it's called after outdated loop called once, what fuck?
     ProfScope("Acquire image") ret = vkAcquireNextImageKHR(device->h, wnd->render_targets->swapchain.h, UINT64_MAX, frame->img_acq_sem, VK_NULL_HANDLE, &frame->img_idx);
-    // NOTE: this one won't  trigger on nvidia card, nvidia use frame end submit to handle window resizing which is much better, fuck amd
-    if(ret == VK_ERROR_OUT_OF_DATE_KHR || ret == VK_SUBOPTIMAL_KHR)
+    if(ret == VK_ERROR_OUT_OF_DATE_KHR)
     {
       r_vulkan_window_resize(wnd);
-      r_vulkan_cleanup_unsafe_semaphore(r_vulkan_state->logical_device.gfx_queue, frame->img_acq_sem);
-      // NOTE(k): this part is not a hotspot, to make it simple, we just use a vkDeviceWaitIdle
-      // https://stackoverflow.com/questions/70762372/how-to-recreate-swapchain-after-vkacquirenextimagekhr-is-vk-suboptimal-khr?utm_source=chatgpt.com
-      ProfScope("Wait gfx queue idle") VK_Assert(vkQueueWaitIdle(r_vulkan_state->logical_device.gfx_queue));
       continue;
+    }
+    if(ret == VK_SUBOPTIMAL_KHR)
+    {
+      // Treat as success; presentation will handle any necessary swapchain recreation.
+      break;
     }
     AssertAlways(ret == VK_SUCCESS);
     break;
@@ -5463,8 +5463,12 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
   }
   VkImage id_color_image = wnd->render_targets->stage_id_image.h;
   {
-    r_vulkan_image_transition(frame->cmd_buf, id_color_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                              VK_PIPELINE_STAGE_HOST_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    // [id_color_image] undefined -> transfer_dst
+    r_vulkan_image_transition(frame->cmd_buf, id_color_image,
+                              VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                              VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                              VK_IMAGE_ASPECT_COLOR_BIT);
     VkClearColorValue clear_clr = {0,0,0,0};
     VkImageSubresourceRange subrange;
     subrange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -5579,8 +5583,11 @@ r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
                               VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                               VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
 
+    // [swapchain image] undefined -> color_attachment
     r_vulkan_image_transition(frame->cmd_buf, swapchain->images[frame->img_idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                              VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+                              VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0,
+                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                              VK_IMAGE_ASPECT_COLOR_BIT);
 
     // begin
     vkCmdBeginRendering(cmd_buf, &render_info);
@@ -5613,7 +5620,7 @@ r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
     vkCmdEndRendering(cmd_buf);
   }
   r_vulkan_image_transition(frame->cmd_buf, swapchain->images[frame->img_idx], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+                            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, VK_IMAGE_ASPECT_COLOR_BIT);
 
   ////////////////////////////////
   //~ Submit gfx command buffer
@@ -5987,10 +5994,18 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         // end drawing
         vkCmdEndRendering(cmd_buf);
 
-        r_vulkan_image_transition(cmd_buf, render_targets->scratch_color_image.h, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
-        r_vulkan_image_transition(cmd_buf, render_targets->stage_color_image.h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        // [scratch_color_image] color attachment -> transfer src
+        r_vulkan_image_transition(cmd_buf, render_targets->scratch_color_image.h,
+                                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                                  VK_IMAGE_ASPECT_COLOR_BIT);
+        // [stage_color_image] shader read -> transfer dst
+        r_vulkan_image_transition(cmd_buf, render_targets->stage_color_image.h,
+                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+                                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                                  VK_IMAGE_ASPECT_COLOR_BIT);
 
         // copy scratch image to stage image
         {
