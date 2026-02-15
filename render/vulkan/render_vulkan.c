@@ -5668,7 +5668,9 @@ r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
   //          otherwise a signaled semaphore may never be properly waited upon
   if(prest_ret == VK_ERROR_OUT_OF_DATE_KHR || prest_ret == VK_SUBOPTIMAL_KHR)
   {
-    r_vulkan_window_resize(wnd);
+    Vec2F32 window_dim = dim_2f32(os_client_rect_from_window(wnd->os_wnd,0));
+    if(window_dim.x != 0 && window_dim.y != 0) r_vulkan_window_resize(wnd);
+    // NOTE(k): if window is minimalized, we skip handling resizing, caller should not submit if it's still minimalized next frame
   } 
   else { AssertAlways(prest_ret == VK_SUCCESS); }
 
