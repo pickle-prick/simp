@@ -680,6 +680,10 @@ os_client_rect_from_window(OS_Handle handle, B32 forced)
                  &root, &x_return,&y_return, &width_return,&height_return,
                  &border_width_return, &depth_return);
     result = r2f32p(0, 0, (F32)width_return, (F32)height_return);
+
+    // update client_dim for window
+    w->client_dim.x = result.x1;
+    w->client_dim.y = result.y1;
   }
 #endif
   ProfEnd();
@@ -1034,6 +1038,9 @@ os_get_events(Arena *arena, B32 wait)
         OS_LNX_Window *window = os_lnx_window_from_x11window(evt.xclient.window);
         window->client_dim.x = evt.xconfigure.width;
         window->client_dim.y = evt.xconfigure.height;
+
+        OS_Event *e = os_event_list_push_new(arena, &evts, OS_EventKind_Wakeup);
+        e->window.u64[0] = (U64)window;
       }break;
       //- rjf: client messages
       case ClientMessage:
