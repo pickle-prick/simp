@@ -1,5 +1,5 @@
-#ifndef RENDER_VULKAN_H
-#define RENDER_VULKAN_H
+#ifndef RENDER_VK_H
+#define RENDER_VK_H
 
 ////////////////////////////////
 //~ Generated Includes
@@ -17,144 +17,152 @@
 // frames in flight, the CPU could get ahead of the GPU, because the work load
 // of the GPU could be too larger for it to handle, so the CPU would end up
 // waiting a lot, adding frames of latency Generally extra latency isn't desired
-#define R_VULKAN_MAX_FRAMES_IN_FLIGHT 1
-#define R_VULKAN_STAGING_IN_FLIGHT_COUNT 2
+#define R_VK_MAX_FRAMES_IN_FLIGHT 1
+#define R_VK_STAGING_IN_FLIGHT_COUNT 2
 // support max 4K with 32x32 sized tile
-#define R_VULKAN_TILE_SIZE 32
-#define R_VULKAN_MAX_TILES_PER_PASS ((3840*2160)/(R_VULKAN_TILE_SIZE*R_VULKAN_TILE_SIZE))
-#define R_VULKAN_MAX_LIGHTS_PER_TILE 200
+#define R_VK_TILE_SIZE 32
+#define R_VK_MAX_TILES_PER_PASS ((3840*2160)/(R_VK_TILE_SIZE*R_VK_TILE_SIZE))
+#define R_VK_MAX_LIGHTS_PER_TILE 200
 
 ////////////////////////////////
 //~ Enums
 
-typedef enum R_Vulkan_VShadKind
+typedef enum R_VK_VShadKind
 {
-  R_Vulkan_VShadKind_Rect,
-  // R_Vulkan_VShadKind_Blur,
-  R_Vulkan_VShadKind_Noise,
-  R_Vulkan_VShadKind_Edge,
-  R_Vulkan_VShadKind_Crt,
-  R_Vulkan_VShadKind_Geo2D_Forward,
-  R_Vulkan_VShadKind_Geo2D_Composite,
-  R_Vulkan_VShadKind_Geo3D_ZPre,
-  R_Vulkan_VShadKind_Geo3D_Debug,
-  R_Vulkan_VShadKind_Geo3D_Forward,
-  R_Vulkan_VShadKind_Geo3D_Composite,
-  R_Vulkan_VShadKind_Finalize,
-  R_Vulkan_VShadKind_COUNT,
-} R_Vulkan_VShadKind;
+  R_VK_VShadKind_Rect,
+  // R_VK_VShadKind_Blur,
+  R_VK_VShadKind_Noise,
+  R_VK_VShadKind_Edge,
+  R_VK_VShadKind_Crt,
+  R_VK_VShadKind_Geo2D_Forward,
+  R_VK_VShadKind_Geo2D_Composite,
+  R_VK_VShadKind_Geo3D_ZPre,
+  R_VK_VShadKind_Geo3D_Debug,
+  R_VK_VShadKind_Geo3D_Forward,
+  R_VK_VShadKind_Geo3D_Composite,
+  R_VK_VShadKind_Finalize,
+  R_VK_VShadKind_COUNT,
+} R_VK_VShadKind;
 
-typedef enum R_Vulkan_FShadKind
+typedef enum R_VK_FShadKind
 {
-  R_Vulkan_FShadKind_Rect,
-  // R_Vulkan_FShadKind_Blur,
-  R_Vulkan_FShadKind_Noise,
-  R_Vulkan_FShadKind_Edge,
-  R_Vulkan_FShadKind_Crt,
-  R_Vulkan_FShadKind_Geo2D_Forward,
-  R_Vulkan_FShadKind_Geo2D_Composite,
-  R_Vulkan_FShadKind_Geo3D_ZPre,
-  R_Vulkan_FShadKind_Geo3D_Debug,
-  R_Vulkan_FShadKind_Geo3D_Forward,
-  R_Vulkan_FShadKind_Geo3D_Composite,
-  R_Vulkan_FShadKind_Finalize,
-  R_Vulkan_FShadKind_COUNT,
-} R_Vulkan_FShadKind;
+  R_VK_FShadKind_Rect,
+  // R_VK_FShadKind_Blur,
+  R_VK_FShadKind_Noise,
+  R_VK_FShadKind_Edge,
+  R_VK_FShadKind_Crt,
+  R_VK_FShadKind_Geo2D_Forward,
+  R_VK_FShadKind_Geo2D_Composite,
+  R_VK_FShadKind_Geo3D_ZPre,
+  R_VK_FShadKind_Geo3D_Debug,
+  R_VK_FShadKind_Geo3D_Forward,
+  R_VK_FShadKind_Geo3D_Composite,
+  R_VK_FShadKind_Finalize,
+  R_VK_FShadKind_COUNT,
+} R_VK_FShadKind;
 
-typedef enum R_Vulkan_CShadKind
+typedef enum R_VK_CShadKind
 {
-  R_Vulkan_CShadKind_Geo3D_TileFrustum,
-  R_Vulkan_CShadKind_Geo3D_LightCulling,
-  R_Vulkan_CShadKind_COUNT,
-} R_Vulkan_CShadKind;
+  R_VK_CShadKind_Geo3D_TileFrustum,
+  R_VK_CShadKind_Geo3D_LightCulling,
+  R_VK_CShadKind_COUNT,
+} R_VK_CShadKind;
 
-typedef enum R_Vulkan_UBOTypeKind
+// FIXME: rework on this, maybe we need more types
+typedef enum R_VK_MemoryHeapUsage
 {
-  R_Vulkan_UBOTypeKind_Rect,
-  // R_Vulkan_UBOTypeKind_Blur,
-  R_Vulkan_UBOTypeKind_Geo2D,
-  R_Vulkan_UBOTypeKind_Geo3D,
-  R_Vulkan_UBOTypeKind_Geo3D_TileFrustum,
-  R_Vulkan_UBOTypeKind_Geo3D_LightCulling,
-  R_Vulkan_UBOTypeKind_COUNT,
-} R_Vulkan_UBOTypeKind;
+  R_VK_MemoryHeapUsage_Buffer,
+  R_VK_MemoryHeapUsage_Image,
+  R_VK_MemoryHeapUsage_COUNT,
+} R_VK_MemoryHeapUsage;
 
-typedef enum R_Vulkan_SBOTypeKind
+typedef enum R_VK_UBOTypeKind
 {
-  R_Vulkan_SBOTypeKind_Geo3D_Joints,
-  R_Vulkan_SBOTypeKind_Geo3D_Materials,
-  R_Vulkan_SBOTypeKind_Geo3D_Tiles,
-  R_Vulkan_SBOTypeKind_Geo3D_Lights,
-  R_Vulkan_SBOTypeKind_Geo3D_LightIndices,
-  R_Vulkan_SBOTypeKind_Geo3D_TileLights,
-  R_Vulkan_SBOTypeKind_COUNT,
-} R_Vulkan_SBOTypeKind;
+  R_VK_UBOTypeKind_Rect,
+  // R_VK_UBOTypeKind_Blur,
+  R_VK_UBOTypeKind_Geo2D,
+  R_VK_UBOTypeKind_Geo3D,
+  R_VK_UBOTypeKind_Geo3D_TileFrustum,
+  R_VK_UBOTypeKind_Geo3D_LightCulling,
+  R_VK_UBOTypeKind_COUNT,
+} R_VK_UBOTypeKind;
 
-typedef enum R_Vulkan_DescriptorSetKind
+typedef enum R_VK_SBOTypeKind
 {
-  R_Vulkan_DescriptorSetKind_Tex2D,
+  R_VK_SBOTypeKind_Geo3D_Joints,
+  R_VK_SBOTypeKind_Geo3D_Materials,
+  R_VK_SBOTypeKind_Geo3D_Tiles,
+  R_VK_SBOTypeKind_Geo3D_Lights,
+  R_VK_SBOTypeKind_Geo3D_LightIndices,
+  R_VK_SBOTypeKind_Geo3D_TileLights,
+  R_VK_SBOTypeKind_COUNT,
+} R_VK_SBOTypeKind;
+
+typedef enum R_VK_DescriptorSetKind
+{
+  R_VK_DescriptorSetKind_Tex2D,
   // ui
-  R_Vulkan_DescriptorSetKind_UBO_Rect,
+  R_VK_DescriptorSetKind_UBO_Rect,
   // 2d
-  R_Vulkan_DescriptorSetKind_UBO_Geo2D,
+  R_VK_DescriptorSetKind_UBO_Geo2D,
   // 3d
-  R_Vulkan_DescriptorSetKind_UBO_Geo3D,
-  R_Vulkan_DescriptorSetKind_UBO_Geo3D_TileFrustum,
-  R_Vulkan_DescriptorSetKind_UBO_Geo3D_LightCulling,
-  R_Vulkan_DescriptorSetKind_SBO_Geo3D_Joints,
-  R_Vulkan_DescriptorSetKind_SBO_Geo3D_Materials,
-  R_Vulkan_DescriptorSetKind_SBO_Geo3D_Tiles,
-  R_Vulkan_DescriptorSetKind_SBO_Geo3D_Lights,
-  R_Vulkan_DescriptorSetKind_SBO_Geo3D_LightIndices,
-  R_Vulkan_DescriptorSetKind_SBO_Geo3D_TileLights,
-  R_Vulkan_DescriptorSetKind_COUNT,
-} R_Vulkan_DescriptorSetKind;
+  R_VK_DescriptorSetKind_UBO_Geo3D,
+  R_VK_DescriptorSetKind_UBO_Geo3D_TileFrustum,
+  R_VK_DescriptorSetKind_UBO_Geo3D_LightCulling,
+  R_VK_DescriptorSetKind_SBO_Geo3D_Joints,
+  R_VK_DescriptorSetKind_SBO_Geo3D_Materials,
+  R_VK_DescriptorSetKind_SBO_Geo3D_Tiles,
+  R_VK_DescriptorSetKind_SBO_Geo3D_Lights,
+  R_VK_DescriptorSetKind_SBO_Geo3D_LightIndices,
+  R_VK_DescriptorSetKind_SBO_Geo3D_TileLights,
+  R_VK_DescriptorSetKind_COUNT,
+} R_VK_DescriptorSetKind;
 
-typedef enum R_Vulkan_PipelineKind
+typedef enum R_VK_PipelineKind
 {
   // gfx pipeline
-  R_Vulkan_PipelineKind_GFX_Rect,
-  // R_Vulkan_PipelineKind_GFX_Blur,
-  R_Vulkan_PipelineKind_GFX_Noise,
-  R_Vulkan_PipelineKind_GFX_Edge,
-  R_Vulkan_PipelineKind_GFX_Crt,
+  R_VK_PipelineKind_GFX_Rect,
+  // R_VK_PipelineKind_GFX_Blur,
+  R_VK_PipelineKind_GFX_Noise,
+  R_VK_PipelineKind_GFX_Edge,
+  R_VK_PipelineKind_GFX_Crt,
   // 2d
-  R_Vulkan_PipelineKind_GFX_Geo2D_Forward,
-  R_Vulkan_PipelineKind_GFX_Geo2D_Composite,
+  R_VK_PipelineKind_GFX_Geo2D_Forward,
+  R_VK_PipelineKind_GFX_Geo2D_Composite,
   // 3d
-  R_Vulkan_PipelineKind_GFX_Geo3D_ZPre,
-  R_Vulkan_PipelineKind_GFX_Geo3D_Debug,
-  R_Vulkan_PipelineKind_GFX_Geo3D_Forward,
-  R_Vulkan_PipelineKind_GFX_Geo3D_Composite,
-  R_Vulkan_PipelineKind_GFX_Finalize,
+  R_VK_PipelineKind_GFX_Geo3D_ZPre,
+  R_VK_PipelineKind_GFX_Geo3D_Debug,
+  R_VK_PipelineKind_GFX_Geo3D_Forward,
+  R_VK_PipelineKind_GFX_Geo3D_Composite,
+  R_VK_PipelineKind_GFX_Finalize,
   // compute pipeline
-  R_Vulkan_PipelineKind_CMP_Geo3D_TileFrustum,
-  R_Vulkan_PipelineKind_CMP_Geo3D_LightCulling,
-  R_Vulkan_PipelineKind_COUNT,
-} R_Vulkan_PipelineKind;
+  R_VK_PipelineKind_CMP_Geo3D_TileFrustum,
+  R_VK_PipelineKind_CMP_Geo3D_LightCulling,
+  R_VK_PipelineKind_COUNT,
+} R_VK_PipelineKind;
 
-typedef enum R_Vulkan_Light3DKind
+typedef enum R_VK_Light3DKind
 {
-  R_Vulkan_Light3DKind_Directional,
-  R_Vulkan_Light3DKind_Point,
-  R_Vulkan_Light3DKind_Spot,
-  R_Vulkan_Light3DKind_COUNT,
-} R_Vulkan_Light3DKind;
+  R_VK_Light3DKind_Directional,
+  R_VK_Light3DKind_Point,
+  R_VK_Light3DKind_Spot,
+  R_VK_Light3DKind_COUNT,
+} R_VK_Light3DKind;
 
 ////////////////////////////////
 //~ Light Calc Types
 
-typedef struct R_Vulkan_Plane R_Vulkan_Plane;
-struct R_Vulkan_Plane
+typedef struct R_VK_Plane R_VK_Plane;
+struct R_VK_Plane
 {
   Vec3F32 N; // plane normal
   F32 d; // distance to the origin
 };
 
-typedef struct R_Vulkan_Frustum R_Vulkan_Frustum;
-struct R_Vulkan_Frustum
+typedef struct R_VK_Frustum R_VK_Frustum;
+struct R_VK_Frustum
 {
-  R_Vulkan_Plane planes[6];
+  R_VK_Plane planes[6];
 };
 
 ////////////////////////////////
@@ -162,8 +170,8 @@ struct R_Vulkan_Frustum
 
 //- ubo
 
-typedef struct R_Vulkan_UBO_Rect R_Vulkan_UBO_Rect;
-struct R_Vulkan_UBO_Rect
+typedef struct R_VK_UBO_Rect R_VK_UBO_Rect;
+struct R_VK_UBO_Rect
 {
   Vec2F32 viewport_size;
   F32 opacity;
@@ -175,7 +183,7 @@ struct R_Vulkan_UBO_Rect
   Vec2F32 xform_scale;
   F32 _padding1_[2];
 };
-// StaticAssert(sizeof(R_Vulkan_UBO_Rect) % 256 == 0, NotAligned); // constant count/offset must be aligned to 256 bytes
+// StaticAssert(sizeof(R_VK_UBO_Rect) % 256 == 0, NotAligned); // constant count/offset must be aligned to 256 bytes
 
 // typedef struct R_D3D11_Uniforms_BlurPass R_D3D11_Uniforms_BlurPass;
 // struct R_D3D11_Uniforms_BlurPass
@@ -196,8 +204,8 @@ struct R_Vulkan_UBO_Rect
 //   Vec4F32 kernel[32];
 // };
 
-typedef struct R_Vulkan_UBO_Geo2D R_Vulkan_UBO_Geo2D;
-struct R_Vulkan_UBO_Geo2D
+typedef struct R_VK_UBO_Geo2D R_VK_UBO_Geo2D;
+struct R_VK_UBO_Geo2D
 {
   Mat4x4F32 proj;
   Mat4x4F32 proj_inv;
@@ -205,8 +213,8 @@ struct R_Vulkan_UBO_Geo2D
   Mat4x4F32 view_inv;
 };
 
-typedef struct R_Vulkan_UBO_Geo3D R_Vulkan_UBO_Geo3D;
-struct R_Vulkan_UBO_Geo3D
+typedef struct R_VK_UBO_Geo3D R_VK_UBO_Geo3D;
+struct R_VK_UBO_Geo3D
 {
   Mat4x4F32 view;
   Mat4x4F32 view_inv;
@@ -218,16 +226,16 @@ struct R_Vulkan_UBO_Geo3D
   U32       _padding_0[3];
 };
 
-typedef struct R_Vulkan_UBO_Geo3D_TileFrustum R_Vulkan_UBO_Geo3D_TileFrustum;
-struct R_Vulkan_UBO_Geo3D_TileFrustum
+typedef struct R_VK_UBO_Geo3D_TileFrustum R_VK_UBO_Geo3D_TileFrustum;
+struct R_VK_UBO_Geo3D_TileFrustum
 {
   Mat4x4F32 proj_inv;
   Vec2U32 grid_size;
   U32 _padding_0[2];
 };
 
-typedef struct R_Vulkan_UBO_Geo3D_LightCulling R_Vulkan_UBO_Geo3D_LightCulling;
-struct R_Vulkan_UBO_Geo3D_LightCulling
+typedef struct R_VK_UBO_Geo3D_LightCulling R_VK_UBO_Geo3D_LightCulling;
+struct R_VK_UBO_Geo3D_LightCulling
 {
   Mat4x4F32 proj_inv;
   U32 light_count;
@@ -236,29 +244,29 @@ struct R_Vulkan_UBO_Geo3D_LightCulling
 
 //- push
 
-typedef struct R_Vulkan_PUSH_Geo3D_Forward R_Vulkan_PUSH_Geo3D_Forward;
-struct R_Vulkan_PUSH_Geo3D_Forward
+typedef struct R_VK_PUSH_Geo3D_Forward R_VK_PUSH_Geo3D_Forward;
+struct R_VK_PUSH_Geo3D_Forward
 {
   Vec2F32 viewport;
   Vec2U32 light_grid_size;
 };
 
-typedef struct R_Vulkan_PUSH_Noise R_Vulkan_PUSH_Noise;
-struct R_Vulkan_PUSH_Noise
+typedef struct R_VK_PUSH_Noise R_VK_PUSH_Noise;
+struct R_VK_PUSH_Noise
 {
   Vec2F32 resolution;
   Vec2F32 mouse;
   F32 time;
 };
 
-typedef struct R_Vulkan_PUSH_Edge R_Vulkan_PUSH_Edge;
-struct R_Vulkan_PUSH_Edge
+typedef struct R_VK_PUSH_Edge R_VK_PUSH_Edge;
+struct R_VK_PUSH_Edge
 {
   F32 time;
 };
 
-typedef struct R_Vulkan_PUSH_Crt R_Vulkan_PUSH_Crt;
-struct R_Vulkan_PUSH_Crt
+typedef struct R_VK_PUSH_Crt R_VK_PUSH_Crt;
+struct R_VK_PUSH_Crt
 {
   Vec2F32 resolution;
   F32 warp;
@@ -268,35 +276,35 @@ struct R_Vulkan_PUSH_Crt
 
 // -sbo
 
-#define R_Vulkan_SBO_Geo3D_Joint Mat4x4F32
+#define R_VK_SBO_Geo3D_Joint Mat4x4F32
 
-typedef struct R_Vulkan_SBO_Geo3D_Tile R_Vulkan_SBO_Geo3D_Tile;
-struct R_Vulkan_SBO_Geo3D_Tile
+typedef struct R_VK_SBO_Geo3D_Tile R_VK_SBO_Geo3D_Tile;
+struct R_VK_SBO_Geo3D_Tile
 {
-  R_Vulkan_Frustum frustum;
+  R_VK_Frustum frustum;
 };
 
-#define R_Vulkan_SBO_Geo3D_Light R_Geo3D_Light
+#define R_VK_SBO_Geo3D_Light R_Geo3D_Light
 
 // NOTE(k): first element will be used as indice_count
 // NOTE(K): we are using std140, so packed it to 16 bytes boundary
-#define R_Vulkan_SBO_Geo3D_LightIndice U32[4]
+#define R_VK_SBO_Geo3D_LightIndice U32[4]
 
-typedef struct R_Vulkan_SBO_Geo3D_TileLights R_Vulkan_SBO_Geo3D_TileLights;
-struct R_Vulkan_SBO_Geo3D_TileLights
+typedef struct R_VK_SBO_Geo3D_TileLights R_VK_SBO_Geo3D_TileLights;
+struct R_VK_SBO_Geo3D_TileLights
 {
   U32 offset;  
   U32 light_count;
   F32 _padding_0[2];
 };
 
-#define R_Vulkan_SBO_Geo3D_Material R_Geo3D_Material
+#define R_VK_SBO_Geo3D_Material R_Geo3D_Material
 
 ////////////////////////////////
 //~ Vulkan Device Types
 
-typedef struct R_Vulkan_Surface R_Vulkan_Surface;
-struct R_Vulkan_Surface
+typedef struct R_VK_Surface R_VK_Surface;
+struct R_VK_Surface
 {
   VkSurfaceKHR h;
   VkSurfaceCapabilitiesKHR caps;
@@ -306,8 +314,8 @@ struct R_Vulkan_Surface
   VkPresentModeKHR prest_modes[8];
 };
 
-typedef struct R_Vulkan_Image R_Vulkan_Image;
-struct R_Vulkan_Image
+typedef struct R_VK_Image R_VK_Image;
+struct R_VK_Image
 {
   VkImage h;
   VkFormat format;
@@ -317,8 +325,8 @@ struct R_Vulkan_Image
   VkImageLayout gpu_layout;
 };
 
-typedef struct R_Vulkan_Swapchain R_Vulkan_Swapchain;
-struct R_Vulkan_Swapchain
+typedef struct R_VK_Swapchain R_VK_Swapchain;
+struct R_VK_Swapchain
 {
   VkSwapchainKHR h;
   VkExtent2D extent;
@@ -331,8 +339,8 @@ struct R_Vulkan_Swapchain
   VkSemaphore submit_semaphores[8];
 };
 
-typedef struct R_Vulkan_PhysicalDevice R_Vulkan_PhysicalDevice;
-struct R_Vulkan_PhysicalDevice
+typedef struct R_VK_PhysicalDevice R_VK_PhysicalDevice;
+struct R_VK_PhysicalDevice
 {
   VkPhysicalDevice h;
   VkPhysicalDeviceProperties properties;
@@ -347,8 +355,8 @@ struct R_Vulkan_PhysicalDevice
   VkFormat depth_image_format;
 };
 
-typedef struct R_Vulkan_LogicalDevice R_Vulkan_LogicalDevice;
-struct R_Vulkan_LogicalDevice
+typedef struct R_VK_LogicalDevice R_VK_LogicalDevice;
+struct R_VK_LogicalDevice
 {
   VkDevice h;
   VkQueue gfx_queue;
@@ -356,18 +364,110 @@ struct R_Vulkan_LogicalDevice
   // VkQueue  xfer_queue;
 };
 
-typedef struct R_Vulkan_Pipeline R_Vulkan_Pipeline;
-struct R_Vulkan_Pipeline
+typedef struct RK_VK_Device RK_VK_Device;
+struct RK_VK_Device
 {
-  R_Vulkan_PipelineKind kind;
+  R_VK_PhysicalDevice physical_device;
+  R_VK_LogicalDevice logic_device;
+};
+
+typedef struct R_VK_Memory R_VK_Memory;
+struct R_VK_Memory
+{
+  VkDeviceMemory memory_handle;
+  U64 offset;
+  U64 size;
+};
+
+typedef struct R_VK_MemoryHeapBlockSlot R_VK_MemoryHeapBlockSlot;
+struct R_VK_MemoryHeapBlockSlot
+{
+  R_VK_MemoryHeapBlockSlot *free_next;
+  R_VK_MemoryHeapBlockSlot *free_prev;
+  R_VK_Memory memory;
+};
+
+typedef struct R_VK_MemoryHeapBlock R_VK_MemoryHeapBlock;
+struct R_VK_MemoryHeapBlock
+{
+  VkDeviceMemory device_handle;
+  U64 size;
+  // U64 stride;
+
+  R_VK_MemoryHeapBlock *free_next;
+  R_VK_MemoryHeapBlock *free_prev;
+
+  R_VK_MemoryHeapBlock *next;
+  R_VK_MemoryHeapBlock *prev;
+
+  R_VK_MemoryHeapBlockSlot *slots; // darray
+  R_VK_MemoryHeapBlockSlot *first_free_slot;
+  R_VK_MemoryHeapBlockSlot *last_free_slot;
+};
+
+read_only global U64 r_vk_memory_chunk_sizes[] =
+{
+  256ULL,                // 0.25 KB (Minimum Vulkan alignment)
+  1024ULL,               // 1 KB
+  4096ULL,               // 4 KB
+  16384ULL,              // 16 KB
+  65536ULL,              // 64 KB
+  262144ULL,             // 256 KB
+  1048576ULL,            // 1 MB
+  4194304ULL,            // 4 MB
+  16777216ULL,           // 16 MB
+  67108864ULL,           // 64 MB
+  268435456ULL,          // 256 MB
+  1073741824ULL,         // 1 GB
+  // 0xffffffffffffffffull, // Fallback for huge manual allocations
+};
+
+typedef struct R_VK_MemoryHeapPool R_VK_MemoryHeapPool;
+struct R_VK_MemoryHeapPool
+{
+  U64 chunk_size;
+
+  // free list (blocks which has free slot)
+  R_VK_MemoryHeapBlock *first_free_block;
+  R_VK_MemoryHeapBlock *last_free_block;
+
+  // linear links
+  R_VK_MemoryHeapBlock *first_block;
+  R_VK_MemoryHeapBlock *last_block;
+  U64 block_count;
+};
+
+typedef struct R_VK_MemoryHeap R_VK_MemoryHeap;
+struct R_VK_MemoryHeap
+{
+  U32 heap_idx;
+  VkMemoryPropertyFlags property_flags;
+
+  R_VK_MemoryHeapPool pools[ArrayCount(r_vk_memory_chunk_sizes)][R_VK_MemoryHeapUsage_COUNT];
+  U64 cmt;
+  U64 res;
+  U64 max_size; // total size avaiable for this heap on the device
+};
+
+typedef struct R_VK_MemoryAllocator R_VK_MemoryAllocator;
+struct R_VK_MemoryAllocator
+{
+  R_VK_MemoryHeap *heaps;
+  U64 heap_count;
+};
+
+typedef struct R_VK_Pipeline R_VK_Pipeline;
+struct R_VK_Pipeline
+{
+  R_VK_PipelineKind kind;
   VkPipeline h;
   VkPipelineLayout layout;
 };
 
-typedef struct R_Vulkan_Buffer R_Vulkan_Buffer;
-struct R_Vulkan_Buffer
+typedef struct R_VK_Buffer R_VK_Buffer;
+struct R_VK_Buffer
 {
-  R_Vulkan_Buffer *next;
+  R_VK_Buffer *next;
   U64 generation;
   VkBuffer h;
   VkDeviceMemory memory;
@@ -382,159 +482,159 @@ struct R_Vulkan_Buffer
   void *mapped;
 };
 
-typedef struct R_Vulkan_DescriptorSetLayout R_Vulkan_DescriptorSetLayout;
-struct R_Vulkan_DescriptorSetLayout
+typedef struct R_VK_DescriptorSetLayout R_VK_DescriptorSetLayout;
+struct R_VK_DescriptorSetLayout
 {
   VkDescriptorSetLayoutBinding *bindings;
   U64 binding_count;
   VkDescriptorSetLayout h;
 };
 
-typedef struct R_Vulkan_DescriptorSetPool R_Vulkan_DescriptorSetPool;
-struct R_Vulkan_DescriptorSetPool
+typedef struct R_VK_DescriptorSetPool R_VK_DescriptorSetPool;
+struct R_VK_DescriptorSetPool
 {
-  R_Vulkan_DescriptorSetPool *next;
-  R_Vulkan_DescriptorSetKind kind;
+  R_VK_DescriptorSetPool *next;
+  R_VK_DescriptorSetKind kind;
   VkDescriptorPool h;
   U64 cmt;
   U64 cap;
 };
 
-typedef struct R_Vulkan_DescriptorSet R_Vulkan_DescriptorSet;
-struct R_Vulkan_DescriptorSet
+typedef struct R_VK_DescriptorSet R_VK_DescriptorSet;
+struct R_VK_DescriptorSet
 {
   VkDescriptorSet h;
-  R_Vulkan_DescriptorSetPool *pool;
+  R_VK_DescriptorSetPool *pool;
 };
 
-typedef struct R_Vulkan_UBOBuffer R_Vulkan_UBOBuffer;
-struct R_Vulkan_UBOBuffer
+typedef struct R_VK_UBOBuffer R_VK_UBOBuffer;
+struct R_VK_UBOBuffer
 {
-  R_Vulkan_Buffer buffer;
-  R_Vulkan_DescriptorSet set;
+  R_VK_Buffer buffer;
+  R_VK_DescriptorSet set;
   U64 unit_count;
   U64 stride;
 };
 
-typedef struct R_Vulkan_SBOBuffer R_Vulkan_SBOBuffer;
-struct R_Vulkan_SBOBuffer
+typedef struct R_VK_SBOBuffer R_VK_SBOBuffer;
+struct R_VK_SBOBuffer
 {
-  R_Vulkan_Buffer buffer;
-  R_Vulkan_DescriptorSet set;
+  R_VK_Buffer buffer;
+  R_VK_DescriptorSet set;
   U64 unit_count;
   U64 stride;
 };
 
-typedef struct R_Vulkan_Tex2D R_Vulkan_Tex2D;
-struct R_Vulkan_Tex2D
+typedef struct R_VK_Tex2D R_VK_Tex2D;
+struct R_VK_Tex2D
 {
-  R_Vulkan_Tex2D *next;
+  R_VK_Tex2D *next;
   U64 generation;
-  R_Vulkan_DescriptorSet desc_set;
-  R_Vulkan_Image image;
+  R_VK_DescriptorSet desc_set;
+  R_VK_Image image;
   R_Tex2DFormat format;
   R_Tex2DSampleKind sample_kind;
 };
 
-typedef struct R_Vulkan_RenderTargets R_Vulkan_RenderTargets;
-struct R_Vulkan_RenderTargets
+typedef struct R_VK_RenderTargets R_VK_RenderTargets;
+struct R_VK_RenderTargets
 {
-  R_Vulkan_RenderTargets *next;
+  R_VK_RenderTargets *next;
   // NOTE(k): If swapchain image format changed, we would need to recreate renderpass and pipeline
   //          If only extent of swapchain image changed, we could just recrete the swapchain
-  R_Vulkan_Swapchain     swapchain;
+  R_VK_Swapchain     swapchain;
 
-  R_Vulkan_Image         stage_color_image;
-  R_Vulkan_DescriptorSet stage_color_ds;
-  R_Vulkan_Image         stage_id_image;
-  R_Vulkan_Buffer        stage_id_cpu;
+  R_VK_Image         stage_color_image;
+  R_VK_DescriptorSet stage_color_ds;
+  R_VK_Image         stage_id_image;
+  R_VK_Buffer        stage_id_cpu;
   // scratch
-  R_Vulkan_Image         scratch_color_image;
-  R_Vulkan_DescriptorSet scratch_color_ds;
+  R_VK_Image         scratch_color_image;
+  R_VK_DescriptorSet scratch_color_ds;
   // edge
-  R_Vulkan_Image         edge_image;
-  R_Vulkan_DescriptorSet edge_ds;
+  R_VK_Image         edge_image;
+  R_VK_DescriptorSet edge_ds;
   // 2d
-  R_Vulkan_Image         geo2d_color_image;
-  R_Vulkan_DescriptorSet geo2d_color_ds;
+  R_VK_Image         geo2d_color_image;
+  R_VK_DescriptorSet geo2d_color_ds;
 
   // 3d
   // TODO(XXX): this is a mess, cleanup unused image, also add toon shading post pass
-  R_Vulkan_Image         geo3d_color_image;
-  R_Vulkan_DescriptorSet geo3d_color_ds;
-  R_Vulkan_Image         geo3d_normal_depth_image;
-  R_Vulkan_DescriptorSet geo3d_normal_depth_ds;
-  R_Vulkan_Image         geo3d_depth_image;
-  R_Vulkan_Image         geo3d_pre_depth_image;
-  R_Vulkan_DescriptorSet geo3d_pre_depth_ds;
+  R_VK_Image         geo3d_color_image;
+  R_VK_DescriptorSet geo3d_color_ds;
+  R_VK_Image         geo3d_normal_depth_image;
+  R_VK_DescriptorSet geo3d_normal_depth_ds;
+  R_VK_Image         geo3d_depth_image;
+  R_VK_Image         geo3d_pre_depth_image;
+  R_VK_DescriptorSet geo3d_pre_depth_ds;
 
-  U64                    rc;
-  U64                    deprecated_at_frame;
+  U64                rc;
+  U64                deprecated_at_frame;
 };
 
-typedef struct R_Vulkan_Frame R_Vulkan_Frame;
-struct R_Vulkan_Frame
+typedef struct R_VK_Frame R_VK_Frame;
+struct R_VK_Frame
 {
   VkSemaphore img_acq_sem;
   VkFence inflt_fence;
   U32 img_idx;
   VkCommandBuffer cmd_buf;
 
-  R_Vulkan_RenderTargets *render_targets_ref;
+  R_VK_RenderTargets *render_targets_ref;
 
   // UBO buffer and descriptor set
-  R_Vulkan_UBOBuffer ubo_buffers[R_Vulkan_UBOTypeKind_COUNT];
+  R_VK_UBOBuffer ubo_buffers[R_VK_UBOTypeKind_COUNT];
 
   // Storage buffer and descriptor set
-  R_Vulkan_SBOBuffer sbo_buffers[R_Vulkan_SBOTypeKind_COUNT];
+  R_VK_SBOBuffer sbo_buffers[R_VK_SBOTypeKind_COUNT];
 
   // Instance buffer
-  R_Vulkan_Buffer inst_buffer_rect[R_MAX_RECT_PASS];
-  R_Vulkan_Buffer inst_buffer_mesh2d[R_MAX_GEO2D_PASS];
-  R_Vulkan_Buffer inst_buffer_mesh3d[R_MAX_GEO3D_PASS];
+  R_VK_Buffer inst_buffer_rect[R_MAX_RECT_PASS];
+  R_VK_Buffer inst_buffer_mesh2d[R_MAX_GEO2D_PASS];
+  R_VK_Buffer inst_buffer_mesh3d[R_MAX_GEO3D_PASS];
 };
 
-typedef struct R_Vulkan_Window R_Vulkan_Window;
-struct R_Vulkan_Window
+typedef struct R_VK_Window R_VK_Window;
+struct R_VK_Window
 {
   // allocation link
   U64 generation;
-  R_Vulkan_Window *next;
+  R_VK_Window *next;
 
   OS_Handle os_wnd;
 
-  R_Vulkan_Surface surface;
-  R_Vulkan_RenderTargets *render_targets;
+  R_VK_Surface surface;
+  R_VK_RenderTargets *render_targets;
   union
   {
     struct
     {
-      R_Vulkan_Pipeline rect;
-      // R_Vulkan_Pipeline blur;
-      R_Vulkan_Pipeline noise;
-      R_Vulkan_Pipeline edge;
-      R_Vulkan_Pipeline crt;
+      R_VK_Pipeline rect;
+      // R_VK_Pipeline blur;
+      R_VK_Pipeline noise;
+      R_VK_Pipeline edge;
+      R_VK_Pipeline crt;
       struct
       {
-        R_Vulkan_Pipeline forward[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT];
-        R_Vulkan_Pipeline composite;
+        R_VK_Pipeline forward[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT];
+        R_VK_Pipeline composite;
       } geo2d;
       struct
       {
-        R_Vulkan_Pipeline tile_frustum;
-        R_Vulkan_Pipeline light_culling;
-        R_Vulkan_Pipeline z_pre[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT];
-        R_Vulkan_Pipeline debug[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT];
-        R_Vulkan_Pipeline forward[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT];
-        R_Vulkan_Pipeline composite;
+        R_VK_Pipeline tile_frustum;
+        R_VK_Pipeline light_culling;
+        R_VK_Pipeline z_pre[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT];
+        R_VK_Pipeline debug[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT];
+        R_VK_Pipeline forward[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT];
+        R_VK_Pipeline composite;
       } geo3d;
-      R_Vulkan_Pipeline finalize;
+      R_VK_Pipeline finalize;
     };
     // TODO(XXX): not sure if we need some paddings here
-    R_Vulkan_Pipeline arr[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT * 4 + 9];
+    R_VK_Pipeline arr[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT * 4 + 9];
   } pipelines;
 
-  R_Vulkan_Frame frames[R_VULKAN_MAX_FRAMES_IN_FLIGHT];
+  R_VK_Frame frames[R_VK_MAX_FRAMES_IN_FLIGHT];
   U64 curr_frame_idx;
 
   // buffer index/offset per frame (for dynamic buffer)
@@ -547,8 +647,8 @@ struct R_Vulkan_Window
 ////////////////////////////////
 //~ Staging Ring Buffer
 
-typedef struct R_Vulkan_StagingRing R_Vulkan_StagingRing;
-struct R_Vulkan_StagingRing
+typedef struct R_VK_StagingRing R_VK_StagingRing;
+struct R_VK_StagingRing
 {
   VkBuffer buffer;
   VkDeviceMemory memory;
@@ -559,8 +659,8 @@ struct R_Vulkan_StagingRing
   U64 tail; // oldest in-flight offset (safe to reuse before this) 
 };
 
-typedef struct R_Vulkan_StagingSlice R_Vulkan_StagingSlice;
-struct R_Vulkan_StagingSlice
+typedef struct R_VK_StagingSlice R_VK_StagingSlice;
+struct R_VK_StagingSlice
 {
   U64 offset;
   U64 size;
@@ -568,8 +668,8 @@ struct R_Vulkan_StagingSlice
 };
 
 // per frame
-typedef struct R_Vulkan_StagingBatch R_Vulkan_StagingBatch;
-struct R_Vulkan_StagingBatch
+typedef struct R_VK_StagingBatch R_VK_StagingBatch;
+struct R_VK_StagingBatch
 {
   // per-upload state
   U64 size;
@@ -577,16 +677,16 @@ struct R_Vulkan_StagingBatch
   U64 end;
   B32 submitted;
   // per-frame artifacts (darray)
-  R_Vulkan_Image **images;
+  R_VK_Image **images;
 };
 
-typedef struct R_Vulkan_Stage R_Vulkan_Stage;
-struct R_Vulkan_Stage
+typedef struct R_VK_Stage R_VK_Stage;
+struct R_VK_Stage
 {
-  R_Vulkan_StagingRing ring;
-  VkCommandBuffer cmds[R_VULKAN_STAGING_IN_FLIGHT_COUNT];
-  VkFence fences[R_VULKAN_STAGING_IN_FLIGHT_COUNT];
-  R_Vulkan_StagingBatch batches[R_VULKAN_STAGING_IN_FLIGHT_COUNT];
+  R_VK_StagingRing ring;
+  VkCommandBuffer cmds[R_VK_STAGING_IN_FLIGHT_COUNT];
+  VkFence fences[R_VK_STAGING_IN_FLIGHT_COUNT];
+  R_VK_StagingBatch batches[R_VK_STAGING_IN_FLIGHT_COUNT];
   U64 idx; // in-flight rotation index
   U64 last_touch_frame_index;
 };
@@ -594,8 +694,8 @@ struct R_Vulkan_Stage
 ////////////////////////////////
 //~ State Types
 
-typedef struct R_Vulkan_State R_Vulkan_State;
-struct R_Vulkan_State
+typedef struct R_VK_State R_VK_State;
+struct R_VK_State
 {
   bool                                debug;
   VkDebugUtilsMessengerEXT            debug_messenger;
@@ -603,138 +703,153 @@ struct R_Vulkan_State
 
   Arena                               *arena;
   Arena                               *frame_arena;
-  R_Vulkan_Window                     *first_free_window;
-  R_Vulkan_Tex2D                      *first_free_tex2d;
-  R_Vulkan_Buffer                     *first_free_buffer;
-  R_Vulkan_RenderTargets              *first_free_render_targets;
-  RWMutex                             device_rw_mutex;
+  RWMutex                             device_rw_mutex; // FIXME: not used for now
 
-  R_Vulkan_RenderTargets              *first_to_free_render_targets;
-  R_Vulkan_RenderTargets              *last_to_free_render_targets;
-
+  /* Instance Info */
+  // The interface between application and the Vulkan library (the driver/loader)
   VkInstance                          instance;
   U32                                 instance_version_major;
   U32                                 instance_version_minor;
   U32                                 instance_version_patch;
 
+  // FIXME: to be removed
+  // FIXME: device handling is a mess, clean it up later
   // physical device candidates
-  R_Vulkan_PhysicalDevice             *physical_devices;
-  U64                                 physical_device_count; 
+  // R_VK_PhysicalDevice                 *physical_devices;
+  // U64                                 physical_device_count;
+  // U64                                 physical_device_idx;
+  // R_VK_LogicalDevice                  logical_device;
 
-  U64                                 physical_device_idx;
-  R_Vulkan_LogicalDevice              logical_device;
+  /* Device */
+  R_VK_Device                         *device;
 
   VkSampler                           samplers[R_Tex2DSampleKind_COUNT];
-  R_Vulkan_DescriptorSetLayout        set_layouts[R_Vulkan_DescriptorSetKind_COUNT];
+  R_VK_DescriptorSetLayout            set_layouts[R_VK_DescriptorSetKind_COUNT];
 
-  VkShaderModule                      vshad_modules[R_Vulkan_VShadKind_COUNT];
-  VkShaderModule                      fshad_modules[R_Vulkan_FShadKind_COUNT];
-  VkShaderModule                      cshad_modules[R_Vulkan_CShadKind_COUNT];
+  /* Shader modules */
+  VkShaderModule                      vshad_modules[R_VK_VShadKind_COUNT];
+  VkShaderModule                      fshad_modules[R_VK_FShadKind_COUNT];
+  VkShaderModule                      cshad_modules[R_VK_CShadKind_COUNT];
 
+  // FIXME: clean it up
   VkCommandPool                       cmd_pool;
   // TODO(Next): deprecated, remove this ASAP
   // For copying staging buffer or transition image layout
   VkCommandBuffer                     oneshot_cmd_buf;
 
-  R_Vulkan_Stage                      stage;
+  // FIXME: don't need it either, we need some kind of StageBatch here
+  R_VK_Stage                          stage;
 
-  // resource free list
-  R_Vulkan_DescriptorSetPool          *first_avail_ds_pool[R_Vulkan_DescriptorSetKind_COUNT];
+  /* Resource free list */
+  R_VK_Window                         *first_free_window;
+  R_VK_Tex2D                          *first_free_tex2d;
+  R_VK_Buffer                         *first_free_buffer;
+  R_VK_RenderTargets                  *first_free_render_targets;
+  R_VK_DescriptorSetPool              *first_avail_ds_pool[R_VK_DescriptorSetKind_COUNT];
+  R_VK_RenderTargets                  *first_to_free_render_targets;
+  R_VK_RenderTargets                  *last_to_free_render_targets;
+
   // TODO(k): first_free_descriptor, we could update descriptor to point a new buffer or image/sampler
   // TODO(k): we may want to keep track of filled ds_pool
 
+  /* Misc */
   R_Handle                            backup_texture;
   U64                                 frame_index;
 
-  R_Vulkan_DeclStackNils;
-  R_Vulkan_DeclStacks;
+  /* Stack */
+  R_VK_DeclStackNils;
+  R_VK_DeclStacks;
 };
 
 ////////////////////////////////
 //~ Globals
 
-global R_Vulkan_State *r_vulkan_state = 0;
+global R_VK_State *r_vk_state = 0;
 
 ////////////////////////////////
 //~ Window Functions
 
-internal R_Handle         r_vulkan_handle_from_window(R_Vulkan_Window *window);
-internal R_Vulkan_Window* r_vulkan_window_from_handle(R_Handle handle);
-internal void             r_vulkan_window_resize(R_Vulkan_Window *window);
+internal R_Handle     r_vk_handle_from_window(R_VK_Window *window);
+internal R_VK_Window* r_vk_window_from_handle(R_Handle handle);
+internal void         r_vk_window_resize(R_VK_Window *window);
 
 ////////////////////////////////
 //~ Tex2D Functions
 
-internal R_Vulkan_Tex2D* r_vulkan_tex2d_from_handle(R_Handle handle);
-internal R_Handle        r_vulkan_handle_from_tex2d(R_Vulkan_Tex2D *texture);
+internal R_VK_Tex2D* r_vk_tex2d_from_handle(R_Handle handle);
+internal R_Handle    r_vk_handle_from_tex2d(R_VK_Tex2D *texture);
 
 ////////////////////////////////
 //~ Buffer Functions
 
-internal R_Vulkan_Buffer* r_vulkan_buffer_from_handle(R_Handle handle);
-internal R_Handle         r_vulkan_handle_from_buffer(R_Vulkan_Buffer *buffer);
+internal R_VK_Buffer* r_vk_buffer_from_handle(R_Handle handle);
+internal R_Handle     r_vk_handle_from_buffer(R_VK_Buffer *buffer);
 
 ////////////////////////////////
 //~ State Getter
 
-#define r_vulkan_pdevice() (&r_vulkan_state->physical_devices[r_vulkan_state->physical_device_idx])
-#define r_vulkan_ldevice() (&r_vulkan_state->logical_device)
+#define r_vk_pdevice() (&r_vk_state->physical_devices[r_vk_state->physical_device_idx])
+#define r_vk_ldevice() (&r_vk_state->logical_device)
 
 ////////////////////////////////
 //~ Stage Ring Buffer Functions
 
-internal void                  r_vulkan_stage_init();
-internal R_Vulkan_StagingSlice r_vulkan_staging_slice_from_size(U64 size, U64 alignment);
-internal U64                   r_vulkan_free_size_from_staging_ring(U64 alignment);
-internal void                  r_vulkan_stage_begin();
-internal void                  r_vulkan_stage_end();
-internal void                  r_vulkan_stage_bump();
-internal void                  r_vulkan_stage_copy_image(void *src, U64 size, R_Vulkan_Image *dst, Vec3S32 offset, Vec3S32 extent);
+internal void              r_vk_stage_init();
+internal R_VK_StagingSlice r_vk_staging_slice_from_size(U64 size, U64 alignment);
+internal U64               r_vk_free_size_from_staging_ring(U64 alignment);
+internal void              r_vk_stage_begin();
+internal void              r_vk_stage_end();
+internal void              r_vk_stage_bump();
+internal void              r_vk_stage_copy_image(void *src, U64 size, R_VK_Image *dst, Vec3S32 offset, Vec3S32 extent);
 
 ////////////////////////////////
 //~ Vulkan Resource Allocation
 
 //- swapchain
-internal R_Vulkan_Swapchain      r_vulkan_swapchain(R_Vulkan_Surface *surface, OS_Handle os_wnd, VkFormat format, VkColorSpaceKHR color_space, R_Vulkan_Swapchain *old);
-internal void                    r_vulkan_format_for_swapchain(VkSurfaceFormatKHR *formats, U64 count, VkFormat *format, VkColorSpaceKHR *color_space);
+internal R_VK_Swapchain      r_vk_swapchain(R_VK_Surface *surface, OS_Handle os_wnd, VkFormat format, VkColorSpaceKHR color_space, R_VK_Swapchain *old);
+internal void                r_vk_format_for_swapchain(VkSurfaceFormatKHR *formats, U64 count, VkFormat *format, VkColorSpaceKHR *color_space);
 
 //- surface
-internal VkFormat                r_vulkan_optimal_depth_format_from_pdevice(VkPhysicalDevice pdevice);
-internal void                    r_vulkan_surface_update(R_Vulkan_Surface *surface);
+internal VkFormat            r_vk_optimal_depth_format_from_pdevice(VkPhysicalDevice pdevice);
+internal void                r_vk_surface_update(R_VK_Surface *surface);
+
+//- memory
+internal R_VK_Memory*        r_vk_memory_alloc(R_VK_MemoryHeapUsage usage, U64 size, R_VK_MemoryHeapKind preferred, R_VK_MemoryHeapKind fallback);
+internal void                r_vk_memory_release(R_VK_Memory *memory);
 
 //- UBO, SBO
-internal R_Vulkan_UBOBuffer      r_vulkan_ubo_buffer_alloc(R_Vulkan_UBOTypeKind kind, U64 unit_count);
-internal R_Vulkan_SBOBuffer      r_vulkan_sbo_buffer_alloc(R_Vulkan_SBOTypeKind kind, U64 unit_count);
+internal R_VK_UBOBuffer      r_vk_ubo_buffer_alloc(R_VK_UBOTypeKind kind, U64 unit_count);
+internal R_VK_SBOBuffer      r_vk_sbo_buffer_alloc(R_VK_SBOTypeKind kind, U64 unit_count);
 
 //- render targets
-internal R_Vulkan_RenderTargets* r_vulkan_render_targets_alloc(OS_Handle os_wnd, R_Vulkan_Surface *surface, R_Vulkan_RenderTargets *old);
-internal void                    r_vulkan_render_targets_destroy(R_Vulkan_RenderTargets *render_targets);
+internal R_VK_RenderTargets* r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTargets *old);
+internal void                r_vk_render_targets_destroy(R_VK_RenderTargets *render_targets);
 
 //- descriptor
-internal void                    r_vulkan_descriptor_set_alloc(R_Vulkan_DescriptorSetKind kind, U64 set_count, U64 cap, VkBuffer *buffers, VkImageView *image_views, VkSampler *sampler, R_Vulkan_DescriptorSet *sets);
-internal void                    r_vulkan_descriptor_set_destroy(R_Vulkan_DescriptorSet *set);
+internal void                r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind kind, U64 set_count, U64 cap, VkBuffer *buffers, VkImageView *image_views, VkSampler *sampler, R_VK_DescriptorSet *sets);
+internal void                r_vk_descriptor_set_destroy(R_VK_DescriptorSet *set);
 
 //- sync primitives
-internal VkFence                 r_vulkan_fence();
-internal VkSemaphore             r_vulkan_semaphore(VkDevice device);
-internal void                    r_vulkan_cleanup_unsafe_semaphore(VkQueue queue, VkSemaphore semaphore);
+internal VkFence             r_vk_fence();
+internal VkSemaphore         r_vk_semaphore(VkDevice device);
+internal void                r_vk_cleanup_unsafe_semaphore(VkQueue queue, VkSemaphore semaphore);
 
 //- sync helpers
-internal void                    r_vulkan_image_transition(VkCommandBuffer cmd_buf, VkImage image, VkImageLayout old_layout, VkImageLayout new_layout, VkPipelineStageFlags src_stage, VkAccessFlags src_access_flag, VkPipelineStageFlags dst_stage, VkAccessFlags dst_access_flag, VkImageAspectFlags aspect_mask);
+internal void                r_vk_image_transition(VkCommandBuffer cmd_buf, VkImage image, VkImageLayout old_layout, VkImageLayout new_layout, VkPipelineStageFlags src_stage, VkAccessFlags src_access_flag, VkPipelineStageFlags dst_stage, VkAccessFlags dst_access_flag, VkImageAspectFlags aspect_mask);
 
 //- pipeline
-internal R_Vulkan_Pipeline       r_vulkan_gfx_pipeline(R_Vulkan_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolygonKind polygon, VkFormat swapchain_format, R_Vulkan_Pipeline *old);
-internal R_Vulkan_Pipeline       r_vulkan_cmp_pipeline(R_Vulkan_PipelineKind kind);
+internal R_VK_Pipeline       r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolygonKind polygon, VkFormat swapchain_format, R_VK_Pipeline *old);
+internal R_VK_Pipeline       r_vk_cmp_pipeline(R_VK_PipelineKind kind);
 
 //- sampler
-internal VkSampler               r_vulkan_sampler2d(R_Tex2DSampleKind kind);
+internal VkSampler           r_vk_sampler2d(R_Tex2DSampleKind kind);
 
 //- helpers
-internal S32                     r_vulkan_memory_index_from_type_filer(U32 type_bits, VkMemoryPropertyFlags properties);
+internal S32                 r_vk_memory_index_from_type_filer(U32 type_bits, VkMemoryPropertyFlags properties);
 
 //- instance buffers
 
-// internal ID3D11Buffer *r_vulkan_instance_buffer_from_size(U64 size);
+// internal ID3D11Buffer *r_vk_instance_buffer_from_size(U64 size);
 // internal void r_usage_access_flags_from_resource_kind(R_ResourceKind kind, D3D11_USAGE *out_vulkan_usage, UINT *out_cpu_access_flags);
 
 ////////////////////////////////
@@ -755,8 +870,8 @@ internal VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeveri
   } while (0)
 
 //- command buffer scope
-internal void r_vulkan_cmd_begin(VkCommandBuffer cmd_buf);
-internal void r_vulkan_cmd_end(VkCommandBuffer cmd_buf);
-#define CmdScope(c) DeferLoop((r_vulkan_cmd_begin((c))), r_vulkan_cmd_end((c)))
+internal void r_vk_cmd_begin(VkCommandBuffer cmd_buf);
+internal void r_vk_cmd_end(VkCommandBuffer cmd_buf);
+#define CmdScope(c) DeferLoop((r_vk_cmd_begin((c))), r_vk_cmd_end((c)))
 
 #endif

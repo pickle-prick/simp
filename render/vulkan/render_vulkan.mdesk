@@ -1,7 +1,7 @@
 //- rjf: stack table
 
 @table(name, name_lower, type, default)
-R_Vulkan_StackTable:
+R_VK_StackTable:
 {
   //- k: parents
   { Cmd                             cmd                       `VkCommandBuffer`                0                                }
@@ -11,17 +11,17 @@ R_Vulkan_StackTable:
 
 @gen
 {
-  @expand(R_Vulkan_StackTable a) `typedef struct R_Vulkan_$(a.name)Node R_Vulkan_$(a.name)Node; struct R_Vulkan_$(a.name)Node{R_Vulkan_$(a.name)Node *next; $(a.type) v;};`
+  @expand(R_VK_StackTable a) `typedef struct R_VK_$(a.name)Node R_VK_$(a.name)Node; struct R_VK_$(a.name)Node{R_VK_$(a.name)Node *next; $(a.type) v;};`
 }
 
 //- rjf: declaring all default stack tops
 
 @gen
 {
-  `#define R_Vulkan_DeclStackNils \\`;
+  `#define R_VK_DeclStackNils \\`;
   `struct\\`;
   `{\\`;
-    @expand(R_Vulkan_StackTable a) `R_Vulkan_$(a.name)Node $(a.name_lower)_nil_stack_top;\\`;
+    @expand(R_VK_StackTable a) `R_VK_$(a.name)Node $(a.name_lower)_nil_stack_top;\\`;
     `}`;
 }
 
@@ -29,8 +29,8 @@ R_Vulkan_StackTable:
 
 @gen
 {
-  `#define R_Vulkan_InitStackNils(state) \\`;
-  @expand(R_Vulkan_StackTable a) `state->$(a.name_lower)_nil_stack_top.v = $(a.default);\\`;
+  `#define R_VK_InitStackNils(state) \\`;
+  @expand(R_VK_StackTable a) `state->$(a.name_lower)_nil_stack_top.v = $(a.default);\\`;
   ``;
 }
 
@@ -38,10 +38,10 @@ R_Vulkan_StackTable:
 
 @gen
 {
-  `#define R_Vulkan_DeclStacks \\`;
+  `#define R_VK_DeclStacks \\`;
   `struct\\`;
   `{\\`;
-    @expand(R_Vulkan_StackTable a) `struct { R_Vulkan_$(a.name)Node *top; $(a.type) bottom_val; R_Vulkan_$(a.name)Node *free; B32 auto_pop; } $(a.name_lower)_stack;\\`;
+    @expand(R_VK_StackTable a) `struct { R_VK_$(a.name)Node *top; $(a.type) bottom_val; R_VK_$(a.name)Node *free; B32 auto_pop; } $(a.name_lower)_stack;\\`;
     `}`;
 }
 
@@ -49,8 +49,8 @@ R_Vulkan_StackTable:
 
 @gen
 {
-  `#define R_Vulkan_InitStacks(state) \\`;
-  @expand(R_Vulkan_StackTable a) `state->$(a.name_lower)_stack.top = &state->$(a.name_lower)_nil_stack_top; state->$(a.name_lower)_stack.bottom_val = $(a.default); state->$(a.name_lower)_stack.free = 0; state->$(a.name_lower)_stack.auto_pop = 0;\\`;
+  `#define R_VK_InitStacks(state) \\`;
+  @expand(R_VK_StackTable a) `state->$(a.name_lower)_stack.top = &state->$(a.name_lower)_nil_stack_top; state->$(a.name_lower)_stack.bottom_val = $(a.default); state->$(a.name_lower)_stack.free = 0; state->$(a.name_lower)_stack.auto_pop = 0;\\`;
   ``;
 }
 
@@ -58,25 +58,25 @@ R_Vulkan_StackTable:
 
 @gen
 {
-  `#define R_Vulkan_AutoPopStacks(state) \\`
-  @expand(R_Vulkan_StackTable a)
-    `if(state->$(a.name_lower)_stack.auto_pop) { r_vulkan_pop_$(a.name_lower)(); state->$(a.name_lower)_stack.auto_pop = 0; }\\`;
+  `#define R_VK_AutoPopStacks(state) \\`
+  @expand(R_VK_StackTable a)
+    `if(state->$(a.name_lower)_stack.auto_pop) { r_vk_pop_$(a.name_lower)(); state->$(a.name_lower)_stack.auto_pop = 0; }\\`;
   ``; }
 
 //- rjf: decls for the stack function operation headers
 
 @gen
 {
-  @expand(R_Vulkan_StackTable a)
-    `internal $(a.type) $(=>35) r_vulkan_top_$(a.name_lower)(void);`
-    @expand(R_Vulkan_StackTable a)
-    `internal $(a.type) $(=>35) r_vulkan_bottom_$(a.name_lower)(void);`
-    @expand(R_Vulkan_StackTable a)
-    `internal $(a.type) $(=>35) r_vulkan_push_$(a.name_lower)($(a.type) v);`
-    @expand(R_Vulkan_StackTable a)
-    `internal $(a.type) $(=>35) r_vulkan_pop_$(a.name_lower)(void);`
-    @expand(R_Vulkan_StackTable a)
-    `internal $(a.type) $(=>35) r_vulkan_set_next_$(a.name_lower)($(a.type) v);`
+  @expand(R_VK_StackTable a)
+    `internal $(a.type) $(=>35) r_vk_top_$(a.name_lower)(void);`
+    @expand(R_VK_StackTable a)
+    `internal $(a.type) $(=>35) r_vk_bottom_$(a.name_lower)(void);`
+    @expand(R_VK_StackTable a)
+    `internal $(a.type) $(=>35) r_vk_push_$(a.name_lower)($(a.type) v);`
+    @expand(R_VK_StackTable a)
+    `internal $(a.type) $(=>35) r_vk_pop_$(a.name_lower)(void);`
+    @expand(R_VK_StackTable a)
+    `internal $(a.type) $(=>35) r_vk_set_next_$(a.name_lower)($(a.type) v);`
 }
 
 //- rjf: defer-loop helpers
@@ -84,8 +84,8 @@ R_Vulkan_StackTable:
 @gen @c_file
 {
   `#if 1`;
-  @expand(R_Vulkan_StackTable a)
-    `#define R_Vulkan_$(a.name)_Scope(v) DeferLoop(r_vulkan_push_$(a.name_lower)(v), r_vulkan_pop_$(a.name_lower)())`
+  @expand(R_VK_StackTable a)
+    `#define R_VK_$(a.name)_Scope(v) DeferLoop(r_vk_push_$(a.name_lower)(v), r_vk_pop_$(a.name_lower)())`
   `#endif`;
 }
 
@@ -93,14 +93,14 @@ R_Vulkan_StackTable:
 
 @gen @c_file
 {
-  @expand(R_Vulkan_StackTable a)
-    `internal $(a.type) r_vulkan_top_$(a.name_lower)(void) { R_Vulkan_StackTopImpl(r_vulkan_state, $(a.name), $(a.name_lower)) }`;
-  @expand(R_Vulkan_StackTable a)
-    `internal $(a.type) r_vulkan_bottom_$(a.name_lower)(void) { R_Vulkan_StackBottomImpl(r_vulkan_state, $(a.name), $(a.name_lower)) }`;
-  @expand(R_Vulkan_StackTable a)
-    `internal $(a.type) r_vulkan_push_$(a.name_lower)($(a.type) v) { R_Vulkan_StackPushImpl(r_vulkan_state, $(a.name), $(a.name_lower), $(a.type), v) }`;
-  @expand(R_Vulkan_StackTable a)
-    `internal $(a.type) r_vulkan_pop_$(a.name_lower)(void) { R_Vulkan_StackPopImpl(r_vulkan_state, $(a.name), $(a.name_lower)) }`;
-  @expand(R_Vulkan_StackTable a)
-    `internal $(a.type) r_vulkan_set_next_$(a.name_lower)($(a.type) v) { R_Vulkan_StackSetNextImpl(r_vulkan_state, $(a.name), $(a.name_lower), $(a.type), v) }`;
+  @expand(R_VK_StackTable a)
+    `internal $(a.type) r_vk_top_$(a.name_lower)(void) { R_VK_StackTopImpl(r_vk_state, $(a.name), $(a.name_lower)) }`;
+  @expand(R_VK_StackTable a)
+    `internal $(a.type) r_vk_bottom_$(a.name_lower)(void) { R_VK_StackBottomImpl(r_vk_state, $(a.name), $(a.name_lower)) }`;
+  @expand(R_VK_StackTable a)
+    `internal $(a.type) r_vk_push_$(a.name_lower)($(a.type) v) { R_VK_StackPushImpl(r_vk_state, $(a.name), $(a.name_lower), $(a.type), v) }`;
+  @expand(R_VK_StackTable a)
+    `internal $(a.type) r_vk_pop_$(a.name_lower)(void) { R_VK_StackPopImpl(r_vk_state, $(a.name), $(a.name_lower)) }`;
+  @expand(R_VK_StackTable a)
+    `internal $(a.type) r_vk_set_next_$(a.name_lower)($(a.type) v) { R_VK_StackSetNextImpl(r_vk_state, $(a.name), $(a.name_lower), $(a.type), v) }`;
 }
