@@ -23,6 +23,8 @@
 #define R_VK_TILE_SIZE 32
 #define R_VK_MAX_TILES_PER_PASS ((3840*2160)/(R_VK_TILE_SIZE*R_VK_TILE_SIZE))
 #define R_VK_MAX_LIGHTS_PER_TILE 200
+#define R_VK_MAX_SURFACE_FORMATS 16
+#define R_VK_MAX_SURFACE_PRESENT_MODES 16
 
 ////////////////////////////////
 //~ Enums
@@ -68,11 +70,11 @@ typedef enum R_VK_CShadKind
   R_VK_CShadKind_COUNT,
 } R_VK_CShadKind;
 
-// FIXME: rework on this, maybe we need more types
+// FIXME: we could also add a Dedicate kind for dedicated allocation
 typedef enum R_VK_MemoryHeapUsage
 {
-  R_VK_MemoryHeapUsage_Buffer,
-  R_VK_MemoryHeapUsage_Image,
+  R_VK_MemoryHeapUsage_Linear,
+  R_VK_MemoryHeapUsage_NonLinear,
   R_VK_MemoryHeapUsage_COUNT,
 } R_VK_MemoryHeapUsage;
 
@@ -307,11 +309,12 @@ typedef struct R_VK_Surface R_VK_Surface;
 struct R_VK_Surface
 {
   VkSurfaceKHR h;
+
   VkSurfaceCapabilitiesKHR caps;
+  VkSurfaceFormatKHR formats[R_VK_MAX_SURFACE_FORMATS];
   U32 format_count;
-  VkSurfaceFormatKHR formats[8];
+  VkPresentModeKHR prest_modes[R_VK_MAX_SURFACE_PRESENT_MODES];
   U32 prest_mode_count;
-  VkPresentModeKHR prest_modes[8];
 };
 
 typedef struct R_VK_Image R_VK_Image;
@@ -319,9 +322,10 @@ struct R_VK_Image
 {
   VkImage h;
   VkFormat format;
-  VkDeviceMemory memory;
+  struct R_VK_Memory *memory;
   VkImageView view;
   VkExtent2D extent;
+  // FIXME: didn't use for now, may remove it later
   VkImageLayout gpu_layout;
 };
 
@@ -364,45 +368,42 @@ struct R_VK_LogicalDevice
   // VkQueue  xfer_queue;
 };
 
-typedef struct RK_VK_Device RK_VK_Device;
-struct RK_VK_Device
-{
-  R_VK_PhysicalDevice physical_device;
-  R_VK_LogicalDevice logic_device;
-};
-
 typedef struct R_VK_Memory R_VK_Memory;
 struct R_VK_Memory
 {
-  VkDeviceMemory memory_handle;
-  U64 offset;
+  VkDeviceMemory h;
+  U64 offset; // offset into the heap blcok
   U64 size;
+  void *mapped; // already account for offset
 };
 
+// NOTE(k): every block is a dedicated memory allocation
 typedef struct R_VK_MemoryHeapBlockSlot R_VK_MemoryHeapBlockSlot;
 struct R_VK_MemoryHeapBlockSlot
 {
   R_VK_MemoryHeapBlockSlot *free_next;
-  R_VK_MemoryHeapBlockSlot *free_prev;
   R_VK_Memory memory;
+  struct R_VK_MemoryHeapBlock *block; // NOTE(k): we need to get heap block when doing memory mapping, since we can't map vk_memory twice
 };
 
 typedef struct R_VK_MemoryHeapBlock R_VK_MemoryHeapBlock;
 struct R_VK_MemoryHeapBlock
 {
-  VkDeviceMemory device_handle;
-  U64 size;
-  // U64 stride;
+  struct R_VK_MemoryHeapPool *pool;
+  VkDeviceMemory memory_handle;
+  void *mapped;
 
   R_VK_MemoryHeapBlock *free_next;
-  R_VK_MemoryHeapBlock *free_prev;
 
   R_VK_MemoryHeapBlock *next;
   R_VK_MemoryHeapBlock *prev;
 
-  R_VK_MemoryHeapBlockSlot *slots; // darray
+  R_VK_MemoryHeapBlockSlot *slots;
+  U64 slot_count;
+  U64 slot_size;
+
+  // free slot stack
   R_VK_MemoryHeapBlockSlot *first_free_slot;
-  R_VK_MemoryHeapBlockSlot *last_free_slot;
 };
 
 read_only global U64 r_vk_memory_chunk_sizes[] =
@@ -421,15 +422,13 @@ read_only global U64 r_vk_memory_chunk_sizes[] =
   1073741824ULL,         // 1 GB
   // 0xffffffffffffffffull, // Fallback for huge manual allocations
 };
+// FIXME: these sizes need to be power of 2, we need to do some static assertion here
 
 typedef struct R_VK_MemoryHeapPool R_VK_MemoryHeapPool;
 struct R_VK_MemoryHeapPool
 {
-  U64 chunk_size;
-
-  // free list (blocks which has free slot)
+  // free stack (blocks which has free slot)
   R_VK_MemoryHeapBlock *first_free_block;
-  R_VK_MemoryHeapBlock *last_free_block;
 
   // linear links
   R_VK_MemoryHeapBlock *first_block;
@@ -437,23 +436,32 @@ struct R_VK_MemoryHeapPool
   U64 block_count;
 };
 
-typedef struct R_VK_MemoryHeap R_VK_MemoryHeap;
-struct R_VK_MemoryHeap
+typedef struct R_VK_LogicalMemoryHeap R_VK_LogicalMemoryHeap;
+struct R_VK_LogicalMemoryHeap
 {
-  U32 heap_idx;
+  U32 physical_heap_idx;
   VkMemoryPropertyFlags property_flags;
-
+  // NOTE(k): alignment == chunk_size
   R_VK_MemoryHeapPool pools[ArrayCount(r_vk_memory_chunk_sizes)][R_VK_MemoryHeapUsage_COUNT];
+};
+
+typedef struct R_VK_PhysicalMemoryHeap R_VK_PhysicalMemoryHeap;
+struct R_VK_PhysicalMemoryHeap
+{
+  VkMemoryHeapFlags flags;
   U64 cmt;
   U64 res;
-  U64 max_size; // total size avaiable for this heap on the device
+  U64 cap; // total size avaiable for this heap on the device
 };
 
 typedef struct R_VK_MemoryAllocator R_VK_MemoryAllocator;
 struct R_VK_MemoryAllocator
 {
-  R_VK_MemoryHeap *heaps;
-  U64 heap_count;
+  R_VK_LogicalMemoryHeap *logical_heaps;
+  U64 logical_heap_count;
+
+  R_VK_PhysicalMemoryHeap *physical_heaps;
+  U64 physical_heap_count;
 };
 
 typedef struct R_VK_Pipeline R_VK_Pipeline;
@@ -469,17 +477,13 @@ struct R_VK_Buffer
 {
   R_VK_Buffer *next;
   U64 generation;
+
   VkBuffer h;
-  VkDeviceMemory memory;
+  R_VK_Memory *memory;
 
-  R_ResourceKind kind;
+  R_ResourceKind kind; // NOTE(k): used for application side, we don't really need this internally
+
   U64 size;
-  U64 cap;
-
-  VkBuffer staging;
-  VkDeviceMemory staging_memory;
-  // NOTE(k): refer to staging buffer if staging is present
-  void *mapped;
 };
 
 typedef struct R_VK_DescriptorSetLayout R_VK_DescriptorSetLayout;
@@ -507,6 +511,7 @@ struct R_VK_DescriptorSet
   R_VK_DescriptorSetPool *pool;
 };
 
+// FIXME: we should remove UBOBuffer and SBOBuffer types, just create BufferArray or something else 
 typedef struct R_VK_UBOBuffer R_VK_UBOBuffer;
 struct R_VK_UBOBuffer
 {
@@ -712,16 +717,9 @@ struct R_VK_State
   U32                                 instance_version_minor;
   U32                                 instance_version_patch;
 
-  // FIXME: to be removed
-  // FIXME: device handling is a mess, clean it up later
-  // physical device candidates
-  // R_VK_PhysicalDevice                 *physical_devices;
-  // U64                                 physical_device_count;
-  // U64                                 physical_device_idx;
-  // R_VK_LogicalDevice                  logical_device;
-
   /* Device */
-  R_VK_Device                         *device;
+  R_VK_PhysicalDevice                 *physical_device;
+  R_VK_LogicalDevice                  *logical_device;
 
   VkSampler                           samplers[R_Tex2DSampleKind_COUNT];
   R_VK_DescriptorSetLayout            set_layouts[R_VK_DescriptorSetKind_COUNT];
@@ -739,6 +737,8 @@ struct R_VK_State
 
   // FIXME: don't need it either, we need some kind of StageBatch here
   R_VK_Stage                          stage;
+
+  R_VK_MemoryAllocator                *allocator;
 
   /* Resource free list */
   R_VK_Window                         *first_free_window;
@@ -788,8 +788,8 @@ internal R_Handle     r_vk_handle_from_buffer(R_VK_Buffer *buffer);
 ////////////////////////////////
 //~ State Getter
 
-#define r_vk_pdevice() (&r_vk_state->physical_devices[r_vk_state->physical_device_idx])
-#define r_vk_ldevice() (&r_vk_state->logical_device)
+#define r_vk_pdevice() (r_vk_state->physical_device)
+#define r_vk_ldevice() (r_vk_state->logical_device)
 
 ////////////////////////////////
 //~ Stage Ring Buffer Functions
@@ -814,12 +814,16 @@ internal VkFormat            r_vk_optimal_depth_format_from_pdevice(VkPhysicalDe
 internal void                r_vk_surface_update(R_VK_Surface *surface);
 
 //- memory
-internal R_VK_Memory*        r_vk_memory_alloc(R_VK_MemoryHeapUsage usage, U64 size, R_VK_MemoryHeapKind preferred, R_VK_MemoryHeapKind fallback);
-internal void                r_vk_memory_release(R_VK_Memory *memory);
+internal R_VK_Memory*          r_vk_memory_alloc(R_VK_MemoryHeapUsage usage, VkMemoryRequirements mem_requirements, VkMemoryPropertyFlagBits preferred_property_flags, VkMemoryPropertyFlagBits fallback_property_flags);
+internal void                  r_vk_memory_release(R_VK_Memory *memory);
+internal void                  r_vk_memory_map(R_VK_Memory *memory);
+internal VkMemoryPropertyFlags r_vk_property_flags_from_memroy(R_VK_Memory *memory);
 
-//- UBO, SBO
+//- buffer
 internal R_VK_UBOBuffer      r_vk_ubo_buffer_alloc(R_VK_UBOTypeKind kind, U64 unit_count);
 internal R_VK_SBOBuffer      r_vk_sbo_buffer_alloc(R_VK_SBOTypeKind kind, U64 unit_count);
+internal R_VK_Buffer*        r_vk_stage_buffer_from_size(U64 size);
+internal void                r_vk_buffer_release(R_VK_Buffer *buffer);
 
 //- render targets
 internal R_VK_RenderTargets* r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTargets *old);

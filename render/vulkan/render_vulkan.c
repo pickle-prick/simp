@@ -100,7 +100,7 @@ r_vk_window_resize(R_VK_Window *window)
   // Unpack some variables
   R_VK_PhysicalDevice *pdevice = r_vk_pdevice();
   R_VK_Surface *surface = &window->surface;
-  R_VK_LogicalDevice *ldevice = &r_vk_state->logical_device;
+  R_VK_LogicalDevice *ldevice = r_vk_ldevice();
   R_VK_RenderTargets *render_targets = window->render_targets;
 
   // NOTE(k): if the rate of resizing is too high, we could be lagged behind bag destruction, since we're not using generation/idx to track first_to_free_bag
@@ -132,12 +132,6 @@ r_vk_window_resize(R_VK_Window *window)
   }
 #endif
 
-  // NOTE(k): The disadvantage of this approach is that we need to stop all rendering before create the new swap chain
-  // It is possible to create a new swapchain while drawing commands on an image from the old swap chain are still in-flight
-  // You would need to pass the previous swapchain to the oldSwapChain field in the VkSwapchainCreateInfoKHR struct and destroy 
-  // the old swap chain as soon as you're finished using it
-  // vkDeviceWaitIdle(device->h);
-
   // In theory it can be possible for the swapchain image format to change during an applications's lifetime, e.g. when moving a window from an standard range to an high dynamic range monitor
   // This may require the application to recreate the renderpass to make sure the change between dynamic ranges is properly reflected
 
@@ -149,7 +143,6 @@ r_vk_window_resize(R_VK_Window *window)
   render_targets->deprecated_at_frame = r_vk_state->frame_index;
   window->render_targets = r_vk_render_targets_alloc(window->os_wnd, &window->surface, window->render_targets);
 
-  // TODO(XXX): NotImplemented 
   // NOTE(k): if format is changed, we would also need to recreate the render pass
   // bool swapchain_format_changed = window->render_targets->swapchain.format != old_swapchain_format;
   // if(swapchain_format_changed)
@@ -205,6 +198,8 @@ r_vk_handle_from_buffer(R_VK_Buffer *buffer)
 
 ////////////////////////////////
 //~ Stage Ring Buffer Functions
+
+// FIXME: to be removed, this is not a robust solution for staging memory
 
 internal void
 r_vk_stage_init()
@@ -383,10 +378,10 @@ r_vk_stage_end()
     Assert(image->gpu_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     // transfer image layout to shader read
     r_vk_image_transition(cmd, image->h,
-                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                              VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
-                              VK_IMAGE_ASPECT_COLOR_BIT);
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                          VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+                          VK_IMAGE_ASPECT_COLOR_BIT);
     image->gpu_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   }
 
@@ -397,7 +392,7 @@ r_vk_stage_end()
     si.pCommandBuffers = &cmd;
     VK_Assert(vkEndCommandBuffer(cmd));
     VK_Assert(vkResetFences(r_vk_ldevice()->h, 1, &fence));
-    VK_Assert(vkQueueSubmit(r_vk_state->logical_device.gfx_queue, 1, &si, fence));
+    VK_Assert(vkQueueSubmit(r_vk_ldevice()->gfx_queue, 1, &si, fence));
   }
 
   Assert(batch->size > 0);
@@ -481,10 +476,10 @@ r_vk_stage_copy_image(void *src, U64 size, R_VK_Image *dst, Vec3S32 offset, Vec3
       // The problem with it, of course, is that it doesn't necessarily offer the best performance for any operation
       // It is required for some special cases, like using an image as both input and output, or for reading an image after it has left the preinitialized layout
       r_vk_image_transition(cmd, dst->h,
-                                dst->gpu_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-                                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-                                VK_IMAGE_ASPECT_COLOR_BIT);
+                            dst->gpu_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+                            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                            VK_IMAGE_ASPECT_COLOR_BIT);
       dst->gpu_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     }
 
@@ -659,7 +654,7 @@ r_vk_swapchain(R_VK_Surface *surface, OS_Handle os_wnd, VkFormat format, VkColor
     create_info.pQueueFamilyIndices   = NULL; // Optional
   }
 
-  VK_Assert(vkCreateSwapchainKHR(r_vk_state->logical_device.h, &create_info, NULL, &swapchain.h));
+  VK_Assert(vkCreateSwapchainKHR(r_vk_ldevice()->h, &create_info, NULL, &swapchain.h));
 
   ////////////////////////////////
   //~ Retrieving the swap chain images
@@ -668,10 +663,10 @@ r_vk_swapchain(R_VK_Surface *surface, OS_Handle os_wnd, VkFormat format, VkColor
   // We will reference these during rendering operations
   {
     U32 image_count = 0;
-    VK_Assert(vkGetSwapchainImagesKHR(r_vk_state->logical_device.h, swapchain.h, &image_count, NULL));
+    VK_Assert(vkGetSwapchainImagesKHR(r_vk_ldevice()->h, swapchain.h, &image_count, NULL));
     image_count = ClampBot(image_count, ArrayCount(swapchain.images));
     swapchain.image_count = image_count;
-    VK_Assert(vkGetSwapchainImagesKHR(r_vk_state->logical_device.h, swapchain.h, &swapchain.image_count, swapchain.images));
+    VK_Assert(vkGetSwapchainImagesKHR(r_vk_ldevice()->h, swapchain.h, &swapchain.image_count, swapchain.images));
   }
 
   ////////////////////////////////
@@ -711,14 +706,14 @@ r_vk_swapchain(R_VK_Surface *surface, OS_Handle os_wnd, VkFormat format, VkColor
       .subresourceRange.layerCount     = 1,
     };
 
-    VK_Assert(vkCreateImageView(r_vk_state->logical_device.h, &create_info, NULL, &swapchain.image_views[i]));
+    VK_Assert(vkCreateImageView(r_vk_ldevice()->h, &create_info, NULL, &swapchain.image_views[i]));
     // Unlike images, the image views were explicitly created by us, so we need to add a similar loop to destroy them again at the end of the program
   }
 
   // create submit semaphores (one per swapchain image)
   for(U64 i = 0; i < swapchain.image_count; i++)
   {
-    swapchain.submit_semaphores[i] = r_vk_semaphore(r_vk_state->logical_device.h);
+    swapchain.submit_semaphores[i] = r_vk_semaphore(r_vk_ldevice()->h);
   }
   return swapchain;
 }
@@ -796,82 +791,174 @@ internal void
 r_vk_surface_update(R_VK_Surface *surface)
 {
   VK_Assert(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(r_vk_pdevice()->h, surface->h, &surface->caps));
-  VK_Assert(vkGetPhysicalDeviceSurfaceFormatsKHR(r_vk_pdevice()->h, surface->h, &surface->format_count, NULL));
+  uint32_t format_count;
+  VK_Assert(vkGetPhysicalDeviceSurfaceFormatsKHR(r_vk_pdevice()->h, surface->h, &format_count, NULL));
+  surface->format_count = ClampTop(R_VK_MAX_SURFACE_FORMATS, format_count);
   VK_Assert(vkGetPhysicalDeviceSurfaceFormatsKHR(r_vk_pdevice()->h, surface->h, &surface->format_count, surface->formats));
-  VK_Assert(vkGetPhysicalDeviceSurfacePresentModesKHR(r_vk_pdevice()->h, surface->h, &surface->prest_mode_count, NULL));
+  uint32_t prest_mode_count;
+  VK_Assert(vkGetPhysicalDeviceSurfacePresentModesKHR(r_vk_pdevice()->h, surface->h, &prest_mode_count, NULL));
+  surface->prest_mode_count = ClampTop(R_VK_MAX_SURFACE_PRESENT_MODES, prest_mode_count);
   VK_Assert(vkGetPhysicalDeviceSurfacePresentModesKHR(r_vk_pdevice()->h, surface->h, &surface->prest_mode_count, surface->prest_modes));
 }
 
 //- memory
 
 internal R_VK_Memory *
-r_vk_memory_alloc(R_VK_MemoryHeapUsage usage, U64 size, R_VK_MemoryHeapKind preferred, R_VK_MemoryHeapKind fallback)
+r_vk_memory_alloc(R_VK_MemoryHeapUsage usage, VkMemoryRequirements mem_requirements, VkMemoryPropertyFlagBits preferred_property_flags, VkMemoryPropertyFlagBits fallback_property_flags)
 {
-  R_VK_MemoryAllocator *allocator;
+  ProfBeginFunction();
+  R_VK_MemoryAllocator *allocator = r_vk_state->allocator;
   R_VK_Memory *ret = 0;
 
-  // find the best fit chunk size idx
+  U64 size = mem_requirements.size;
+  U64 alignment = mem_requirements.alignment;
+  U32 memorytype_bits = mem_requirements.memoryTypeBits;
+
+  // Find the best fit chunk size idx
   S32 best_fit_chunk_size_idx = -1;
-  U64 best_fit_chunk_size;
   for(U64 i = 0; i < ArrayCount(r_vk_memory_chunk_sizes); i++)
   {
     U64 chunk_size = r_vk_memory_chunk_sizes[i];
-    if(chunk_size >= size)
+    if(chunk_size >= size && chunk_size >= alignment)
     {
       best_fit_chunk_size_idx = i;
-      best_fit_chunk_size = r_vk_memory_chunk_sizes[best_fit_chunk_size_idx];
       break;
     }
   }
 
-  if(best_fit_chunk_idx >= 0)
+  if(best_fit_chunk_size_idx >= 0)
   {
-    R_VK_MemoryHeapKind heap_kinds[2] = {preferred, fallback};
+    VkMemoryPropertyFlagBits property_flags_candidates[2] = {preferred_property_flags, fallback_property_flags};
 
-    for(U64 heap_kind_idx = 0; heap_kind_idx < ArrayCount(heap_kinds); heap_kind_idx++)
+    for(U64 property_flags_idx = 0; property_flags_idx < ArrayCount(property_flags_candidates); property_flags_idx++)
     {
-      R_VK_MemoryHeapKind heap_kind = heap_kinds[heap_kind_idx];
-      R_VK_MemoryHeap *heap = &alloactor->heaps[preferred];
+      VkMemoryPropertyFlagBits property_flags = property_flags_candidates[property_flags_idx];
+      if(property_flags == 0) continue;
 
-      if((heap->res-))
+      for(U32 logical_heap_idx = 0; logical_heap_idx < allocator->logical_heap_count; logical_heap_idx++)
       {
-        R_VK_MemoryHeapPool *pool = &heap->pools[best_fit_chunk_size_idx];
-
-        R_VK_MemoryHeapBlock *free_block = pool->first_free_block;
-
-        // not free block in the pool? -> alloc new block
-        if(free_block == 0)
+        R_VK_LogicalMemoryHeap *logical_heap = &allocator->logical_heaps[logical_heap_idx];
+        if((memorytype_bits & (1u<<logical_heap_idx)) && (logical_heap->property_flags&property_flags) == property_flags)
         {
-          R_VK_MemoryHeapBlock *new_block = push_array(r_vk_state->arena, R_VK_MemoryHeapBlock, 1);
-          U64 new_block_size = best_fit_chunk_size*2;
-          if(pool->last_block)
+          R_VK_PhysicalMemoryHeap *physical_heap = &allocator->physical_heaps[logical_heap->physical_heap_idx];
+          R_VK_MemoryHeapPool *pool = &logical_heap->pools[usage][best_fit_chunk_size_idx];
+          U64 pool_chunk_size = r_vk_memory_chunk_sizes[best_fit_chunk_size_idx];
+
+          R_VK_MemoryHeapBlock *free_block = pool->first_free_block;
+
+          // No free block? -> alloc a new one if we could 
+          if(free_block == 0)
           {
-            new_block_size = pool->last_block->size*2;
+            printf("allocating\n");
+            U64 physical_heap_free_size = physical_heap->cap-physical_heap->res;
+            U64 max_free_slots = physical_heap_free_size/pool_chunk_size;
+            // U64 next_block_slot_count = pool->last_block ? pool->last_block->slot_count*2 : 4;
+            // FIXME: we need to handle this
+            // validation layer: vkAllocateMemory(): pAllocateInfo->allocationSize (4294967296) is larger than maxMemoryAllocationSize (4294967292). While this might work locally on your machine, there are many external factors each platform has that is used to determine this limit. You should receive VK_ERROR_OUT_OF_DEVICE_MEMORY from this call, but even if you do not, it is highly advised from all hardware vendors to not ignore this limit.
+            // FIXME: remove this later
+            U64 next_block_slot_count = 4;
+            next_block_slot_count = ClampTop(max_free_slots, next_block_slot_count);
+            U64 next_block_size = next_block_slot_count * pool_chunk_size;
+
+            if(next_block_size == 0) continue; // no more free memory on this heap? -> try next memory_type
+
+            // Try allocate first
+            VkMemoryAllocateInfo alloc_info = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+            alloc_info.allocationSize = next_block_size;
+            alloc_info.memoryTypeIndex = logical_heap_idx;
+
+            VkDeviceMemory memory_handle;
+            VkResult alloc_ret = vkAllocateMemory(r_vk_ldevice()->h, &alloc_info, NULL, &memory_handle);
+
+            if(alloc_ret == VK_SUCCESS)
+            {
+              R_VK_MemoryHeapBlock *new_block = push_array(r_vk_state->arena, R_VK_MemoryHeapBlock, 1);
+              new_block->pool = pool;
+              new_block->memory_handle = memory_handle;
+              new_block->slot_size = pool_chunk_size;
+              new_block->slot_count = next_block_slot_count;
+              new_block->slots = push_array(r_vk_state->arena, R_VK_MemoryHeapBlockSlot, new_block->slot_count);
+              // Populate the block slots
+              for(U64 slot_idx = 0; slot_idx < new_block->slot_count; slot_idx++)
+              {
+                R_VK_MemoryHeapBlockSlot *slot = &new_block->slots[slot_idx];
+
+                slot->block = new_block;
+                slot->memory.h = memory_handle;
+                slot->memory.offset = slot_idx*pool_chunk_size;
+                slot->memory.size = pool_chunk_size;
+
+                // NOTE(k): the order is backward, but it's totally fine
+                SLLStackPush_N(new_block->first_free_slot, slot, free_next);
+              }
+
+              // Push to pool's free block stack
+              SLLStackPush_N(pool->first_free_block, new_block, free_next);
+              // Push to pool's linear block array
+              DLLPushBack(pool->first_block, pool->last_block, new_block);
+              pool->block_count++;
+
+              // Bump pool (res)
+              physical_heap->res += next_block_size;
+
+              free_block = new_block;
+            }
+            else {AssertAlways(alloc_ret == VK_ERROR_OUT_OF_DEVICE_MEMORY || alloc_ret == VK_ERROR_OUT_OF_HOST_MEMORY);}
           }
 
-          // FIXME: alloc memory
-          VkMemoryPropertyFlags prop_flags = r_vk_memory_heap_kind_2_property_flags[heap_kind];
-          VkMemoryAllocateInfo alloc_info = {0};
-          alloc_info.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-          alloc_info.allocationSize  = .size;
-          alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
-
-          VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &ret.buffer.memory));
-          VK_Assert(vkBindBufferMemory(r_vk_state->logical_device.h, ret.buffer.h, ret.buffer.memory, 0));
-          if(auto_mapped)
+          // Has free block? -> alloca memory from the block
+          if(free_block)
           {
-            VK_Assert(vkMapMemory(r_vk_state->logical_device.h, ret.buffer.memory, 0, ret.buffer.size, 0, &ret.buffer.mapped));
-          }
+            R_VK_MemoryHeapBlockSlot *slot = free_block->first_free_slot;
+            Assert(slot); // NOTE(k): we should have at least one free slot
 
-          free_block = new_block;
-          DLLPushFront_NP(pool->first_free_block, pool->last_free_block, new_block, free_next, free_prev);
-          DLLPushBack_NP(pool->first_block, pool->last_block, new_block, next, prev);
+            // Commit
+            SLLStackPop_N(free_block->first_free_slot, free_next);
+            physical_heap->cmt += pool_chunk_size;
+
+            // No more free slots? -> pop from pool's free block stack
+            if(free_block->first_free_slot == 0)
+            {
+              SLLStackPop_N(pool->first_free_block, free_next);
+            }
+
+            ret = &slot->memory;
+            goto allocated;
+          }
         }
       }
     }
   }
 
+  allocated:
+  ProfEnd();
   return ret;
+}
+
+internal void
+r_vk_memory_release(R_VK_Memory *memory)
+{
+  R_VK_MemoryHeapBlockSlot *slot = CastFromMember(R_VK_MemoryHeapBlockSlot, memory, memory);
+  R_VK_MemoryHeapBlock *block = slot->block;
+  B32 block_was_full = block->first_free_slot == 0;
+  SLLStackPush_N(block->first_free_slot, slot, free_next);
+  // Now we have empty slot to be used, push to free block stack
+  if(block_was_full)
+  {
+    SLLStackPush_N(block->pool->first_free_block, block, free_next);
+  }
+}
+
+internal void
+r_vk_memory_map(R_VK_Memory *memory)
+{
+  R_VK_MemoryHeapBlockSlot *slot = CastFromMember(R_VK_MemoryHeapBlockSlot, memory, memory);
+  R_VK_MemoryHeapBlock *block = slot->block;
+  if(block->mapped == 0)
+  {
+    VK_Assert(vkMapMemory(r_vk_ldevice()->h, memory->h, 0, block->slot_size*block->slot_count, 0, &block->mapped));
+  }
+  memory->mapped = (U8*)block->mapped + memory->offset;
 }
 
 //- UBO, SBO
@@ -912,7 +999,6 @@ r_vk_ubo_buffer_alloc(R_VK_UBOTypeKind kind, U64 unit_count)
   ubo_buffer.unit_count  = unit_count;
   ubo_buffer.stride      = stride;
   ubo_buffer.buffer.size = buf_size;
-  ubo_buffer.buffer.cap  = buf_size;
 
   VkBufferCreateInfo buf_ci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
   // Specifies the size of the buffer in bytes
@@ -932,19 +1018,15 @@ r_vk_ubo_buffer_alloc(R_VK_UBOTypeKind kind, U64 unit_count)
   // memory or that require efficient streaming of data in and out of GPU memory
   buf_ci.flags = 0;
 
-  VK_Assert(vkCreateBuffer(r_vk_state->logical_device.h, &buf_ci, NULL, &ubo_buffer.buffer.h));
+  VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &buf_ci, NULL, &ubo_buffer.buffer.h));
   VkMemoryRequirements mem_requirements;
-  vkGetBufferMemoryRequirements(r_vk_state->logical_device.h, ubo_buffer.buffer.h, &mem_requirements);
+  vkGetBufferMemoryRequirements(r_vk_ldevice()->h, ubo_buffer.buffer.h, &mem_requirements);
 
-  VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-  VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-  alloc_info.allocationSize  = mem_requirements.size;
-  alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
-
-  VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &ubo_buffer.buffer.memory));
-  VK_Assert(vkBindBufferMemory(r_vk_state->logical_device.h, ubo_buffer.buffer.h, ubo_buffer.buffer.memory, 0));
-  Assert(ubo_buffer.buffer.size != 0);
-  VK_Assert(vkMapMemory(r_vk_state->logical_device.h, ubo_buffer.buffer.memory, 0, ubo_buffer.buffer.size, 0, &ubo_buffer.buffer.mapped));
+  VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, property_flags, 0);
+  VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, ubo_buffer.buffer.h, memory->h, memory->offset));
+  r_vk_memory_map(memory);
+  ubo_buffer.buffer.memory = memory;
 
   // Create descriptor set
   R_VK_DescriptorSetKind ds_type = 0;
@@ -1021,7 +1103,6 @@ r_vk_sbo_buffer_alloc(R_VK_SBOTypeKind kind, U64 unit_count)
   ret.unit_count  = unit_count;
   ret.stride      = stride;
   ret.buffer.size = buf_size;
-  ret.buffer.cap  = buf_size;
 
   VkBufferCreateInfo buf_ci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
   buf_ci.size = buf_size;
@@ -1035,21 +1116,18 @@ r_vk_sbo_buffer_alloc(R_VK_SBOTypeKind kind, U64 unit_count)
   // memory or that require efficient streaming of data in and out of GPU memory
   buf_ci.flags = 0;
 
-  VK_Assert(vkCreateBuffer(r_vk_state->logical_device.h, &buf_ci, NULL, &ret.buffer.h));
+  VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &buf_ci, NULL, &ret.buffer.h));
   VkMemoryRequirements mem_requirements;
-  vkGetBufferMemoryRequirements(r_vk_state->logical_device.h, ret.buffer.h, &mem_requirements);
+  vkGetBufferMemoryRequirements(r_vk_ldevice()->h, ret.buffer.h, &mem_requirements);
 
-  VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-  VkMemoryPropertyFlags properties = device_local == 0 ? (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-  alloc_info.allocationSize  = mem_requirements.size;
-  alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
-
-  VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &ret.buffer.memory));
-  VK_Assert(vkBindBufferMemory(r_vk_state->logical_device.h, ret.buffer.h, ret.buffer.memory, 0));
+  VkMemoryPropertyFlags property_flags = device_local == 0 ? (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+  R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, property_flags, 0);
+  VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, ret.buffer.h, memory->h, memory->offset));
   if(auto_mapped)
   {
-    VK_Assert(vkMapMemory(r_vk_state->logical_device.h, ret.buffer.memory, 0, ret.buffer.size, 0, &ret.buffer.mapped));
+    r_vk_memory_map(memory);
   }
+  ret.buffer.memory = memory;
 
   // Create descriptor set
   R_VK_DescriptorSetKind ds_type = 0;
@@ -1061,11 +1139,59 @@ r_vk_sbo_buffer_alloc(R_VK_SBOTypeKind kind, U64 unit_count)
     case R_VK_SBOTypeKind_Geo3D_Lights:       {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_Lights;}break;
     case R_VK_SBOTypeKind_Geo3D_LightIndices: {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_LightIndices;}break;
     case R_VK_SBOTypeKind_Geo3D_TileLights:   {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_TileLights;}break;
-    default:                                      {InvalidPath;}break;
+    default:                                  {InvalidPath;}break;
   }
 
   r_vk_descriptor_set_alloc(ds_type, 1, 3, &ret.buffer.h, NULL, NULL, &ret.set);
   return ret;
+}
+
+internal R_VK_Buffer *
+r_vk_stage_buffer_from_size(U64 size)
+{
+  R_VK_Buffer *ret = r_vk_state->first_free_buffer;
+  if(ret == 0)
+  {
+    ret = push_array(r_vk_state->arena, R_VK_Buffer, 1);
+  }
+  else
+  {
+    U64 gen = ret->generation;
+    SLLStackPop(r_vk_state->first_free_buffer);
+    MemoryZeroStruct(ret);
+    ret->generation = gen;
+  }
+
+  VkBuffer buffer;
+  VkBufferCreateInfo create_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  create_info.size = size;
+  create_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &create_info, NULL, &buffer));
+
+  VkMemoryRequirements mem_requirements;
+  vkGetBufferMemoryRequirements(r_vk_ldevice()->h, buffer, &mem_requirements);
+  VkMemoryPropertyFlags preferred = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+  VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
+  VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, buffer, memory->h, memory->offset));
+  r_vk_memory_map(memory);
+
+  ret->h = buffer;
+  ret->memory = memory;
+  ret->kind = R_ResourceKind_Stream;
+  ret->size = size;
+  return ret;
+}
+
+internal void
+r_vk_buffer_release(R_VK_Buffer *buffer)
+{
+  vkDestroyBuffer(r_vk_ldevice()->h, buffer->h, NULL);
+  r_vk_memory_release(buffer->memory);
+  SLLStackPush(r_vk_state->first_free_buffer, buffer);
+  // NOTE(k): we should increase generation in release instead of alloc
+  buffer->generation++;
 }
 
 //- render targets
@@ -1073,6 +1199,7 @@ r_vk_sbo_buffer_alloc(R_VK_SBOTypeKind kind, U64 unit_count)
 internal R_VK_RenderTargets *
 r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTargets *old)
 {
+  // FIXME: clean up this mess
   R_VK_RenderTargets *ret = r_vk_state->first_free_render_targets;
   R_VK_Swapchain *old_swapchain = 0;
 
@@ -1138,17 +1265,15 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
     create_info.sharingMode       = VK_SHARING_MODE_EXCLUSIVE;
     create_info.samples           = VK_SAMPLE_COUNT_1_BIT;
     create_info.flags             = 0; // Optional
-    VK_Assert(vkCreateImage(r_vk_state->logical_device.h, &create_info, NULL, &stage_color_image->h));
+    VK_Assert(vkCreateImage(r_vk_ldevice()->h, &create_info, NULL, &stage_color_image->h));
 
     VkMemoryRequirements mem_requirements;
-    vkGetImageMemoryRequirements(r_vk_state->logical_device.h, stage_color_image->h, &mem_requirements);
+    vkGetImageMemoryRequirements(r_vk_ldevice()->h, stage_color_image->h, &mem_requirements);
 
-    VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-    VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT; 
-    alloc_info.allocationSize = mem_requirements.size;
-    alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
-    VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &stage_color_image->memory));
-    VK_Assert(vkBindImageMemory(r_vk_state->logical_device.h, stage_color_image->h, stage_color_image->memory, 0));
+    VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_NonLinear, mem_requirements, property_flags, 0);
+    VK_Assert(vkBindImageMemory(r_vk_ldevice()->h, stage_color_image->h, memory->h, memory->offset));
+    stage_color_image->memory = memory;
 
     VkImageViewCreateInfo image_view_create_info = {
       .sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -1161,13 +1286,13 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
       .subresourceRange.baseArrayLayer = 0,
       .subresourceRange.layerCount     = 1,
     };
-    VK_Assert(vkCreateImageView(r_vk_state->logical_device.h, &image_view_create_info, NULL, &stage_color_image->view));
+    VK_Assert(vkCreateImageView(r_vk_ldevice()->h, &image_view_create_info, NULL, &stage_color_image->view));
 
     // Create staging color sampler descriptor set
     r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind_Tex2D,
-                                  1, 16, NULL, &stage_color_image->view,
-                                  &r_vk_state->samplers[R_Tex2DSampleKind_Nearest],
-                                  stage_color_ds);
+                              1, 16, NULL, &stage_color_image->view,
+                              &r_vk_state->samplers[R_Tex2DSampleKind_Nearest],
+                              stage_color_ds);
   }
 
   // stage_id color image
@@ -1191,17 +1316,15 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
     create_info.samples           = VK_SAMPLE_COUNT_1_BIT;
     create_info.flags             = 0;
 
-    VK_Assert(vkCreateImage(r_vk_state->logical_device.h, &create_info, NULL, &stage_id_image->h));
+    VK_Assert(vkCreateImage(r_vk_ldevice()->h, &create_info, NULL, &stage_id_image->h));
 
     VkMemoryRequirements mem_requirements;
-    vkGetImageMemoryRequirements(r_vk_state->logical_device.h, stage_id_image->h, &mem_requirements);
+    vkGetImageMemoryRequirements(r_vk_ldevice()->h, stage_id_image->h, &mem_requirements);
 
-    VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-    VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-    alloc_info.allocationSize = mem_requirements.size;
-    alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
-    VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &stage_id_image->memory));
-    VK_Assert(vkBindImageMemory(r_vk_state->logical_device.h, stage_id_image->h, stage_id_image->memory, 0));
+    VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_NonLinear, mem_requirements, property_flags, 0);
+    VK_Assert(vkBindImageMemory(r_vk_ldevice()->h, stage_id_image->h, memory->h, memory->offset));
+    stage_id_image->memory = memory;
 
     VkImageViewCreateInfo image_view_create_info =
     {
@@ -1215,10 +1338,10 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
       .subresourceRange.baseArrayLayer = 0,
       .subresourceRange.layerCount     = 1,
     };
-    VK_Assert(vkCreateImageView(r_vk_state->logical_device.h, &image_view_create_info, NULL, &stage_id_image->view));
+    VK_Assert(vkCreateImageView(r_vk_ldevice()->h, &image_view_create_info, NULL, &stage_id_image->view));
   }
 
-  // stage_id_cpu
+  // stage_id_cpu (it's linear buffer btw, not a tilling image)
   {
     // VkDeviceSize size = geo3d_id_image->extent.width * geo3d_id_image->extent.height * sizeof(U64);
     VkDeviceSize size = 1*1*sizeof(Vec4F32);
@@ -1226,21 +1349,19 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
     create_info.size = size;
     create_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    VK_Assert(vkCreateBuffer(r_vk_state->logical_device.h, &create_info, NULL, &stage_id_cpu->h));
+    VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &create_info, NULL, &stage_id_cpu->h));
     VkMemoryRequirements mem_requirements;
-    vkGetBufferMemoryRequirements(r_vk_state->logical_device.h, stage_id_cpu->h, &mem_requirements);
+    vkGetBufferMemoryRequirements(r_vk_ldevice()->h, stage_id_cpu->h, &mem_requirements);
     stage_id_cpu->size = mem_requirements.size;
 
-    VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
     // FIXME: we should use VK_MEMORY_PROPERTY_HOST_CACHED_BIT for gpu read back buffer
-    VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    alloc_info.allocationSize = mem_requirements.size;
-    alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
-
-    VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &stage_id_cpu->memory));
-    VK_Assert(vkBindBufferMemory(r_vk_state->logical_device.h, stage_id_cpu->h, stage_id_cpu->memory, 0));
-    Assert(stage_id_cpu->size != 0);
-    VK_Assert(vkMapMemory(r_vk_state->logical_device.h, stage_id_cpu->memory, 0, stage_id_cpu->size, 0, &stage_id_cpu->mapped));
+    // VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    // FIXME: do we need to invalid cache everytime I read from it?
+    VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+    R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, property_flags, 0);
+    VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, stage_id_cpu->h, memory->h, memory->offset));
+    r_vk_memory_map(memory);
+    stage_id_cpu->memory = memory;
   }
 
   // edge image and its sampler descriptor set
@@ -1263,22 +1384,16 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
     create_info.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
     create_info.samples       = VK_SAMPLE_COUNT_1_BIT;
     create_info.flags         = 0; // Optional
-    VK_Assert(vkCreateImage(r_vk_state->logical_device.h, &create_info, NULL, &image_handle));
+    VK_Assert(vkCreateImage(r_vk_ldevice()->h, &create_info, NULL, &image_handle));
 
     VkMemoryRequirements mem_requirements;
-    vkGetImageMemoryRequirements(r_vk_state->logical_device.h, image_handle, &mem_requirements);
+    vkGetImageMemoryRequirements(r_vk_ldevice()->h, image_handle, &mem_requirements);
 
-    VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-    VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-    alloc_info.allocationSize = mem_requirements.size;
-    alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
-
-    VkDeviceMemory memory = {0};
-    VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &memory));
-    VK_Assert(vkBindImageMemory(r_vk_state->logical_device.h, image_handle, memory, 0));
+    VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_NonLinear, mem_requirements, property_flags, 0);
+    VK_Assert(vkBindImageMemory(r_vk_ldevice()->h, image_handle, memory->h, memory->offset));
 
     VkImageViewCreateInfo image_view_create_info = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-    
     image_view_create_info.image                           = image_handle;
     image_view_create_info.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
     image_view_create_info.format                          = format;
@@ -1289,14 +1404,14 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
     image_view_create_info.subresourceRange.layerCount     = 1;
     
     VkImageView image_view = {0};
-    VK_Assert(vkCreateImageView(r_vk_state->logical_device.h, &image_view_create_info, NULL, &image_view));
+    VK_Assert(vkCreateImageView(r_vk_ldevice()->h, &image_view_create_info, NULL, &image_view));
 
     R_VK_DescriptorSet ds = {0};
     // create sampler descriptor set
     r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind_Tex2D,
-                                  1, 16, NULL, &image_view,
-                                  &r_vk_state->samplers[R_Tex2DSampleKind_Nearest],
-                                  &ds);
+                              1, 16, NULL, &image_view,
+                              &r_vk_state->samplers[R_Tex2DSampleKind_Nearest],
+                              &ds);
 
     // copy values
     edge_image->h = image_handle;
@@ -1313,6 +1428,9 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
     geo2d_color_image->extent.width  = swapchain->extent.width;
     geo2d_color_image->extent.height = swapchain->extent.height;
 
+    ////////////////////////////////
+    // Create image
+
     VkImageCreateInfo create_info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
     create_info.imageType         = VK_IMAGE_TYPE_2D;
     create_info.extent.width      = geo2d_color_image->extent.width;
@@ -1327,18 +1445,21 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
     create_info.sharingMode       = VK_SHARING_MODE_EXCLUSIVE;
     create_info.samples           = VK_SAMPLE_COUNT_1_BIT;
     create_info.flags             = 0; // Optional
-    VK_Assert(vkCreateImage(r_vk_state->logical_device.h, &create_info, NULL, &geo2d_color_image->h));
+    VK_Assert(vkCreateImage(r_vk_ldevice()->h, &create_info, NULL, &geo2d_color_image->h));
+
+    ////////////////////////////////
+    // Allocate memory
 
     VkMemoryRequirements mem_requirements;
-    vkGetImageMemoryRequirements(r_vk_state->logical_device.h, geo2d_color_image->h, &mem_requirements);
+    vkGetImageMemoryRequirements(r_vk_ldevice()->h, geo2d_color_image->h, &mem_requirements);
 
-    VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-    VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-    alloc_info.allocationSize = mem_requirements.size;
-    alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
+    VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_NonLinear, mem_requirements, property_flags, 0);
+    VK_Assert(vkBindImageMemory(r_vk_ldevice()->h, geo2d_color_image->h, memory->h, memory->offset));
+    geo2d_color_image->memory = memory;
 
-    VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &geo2d_color_image->memory));
-    VK_Assert(vkBindImageMemory(r_vk_state->logical_device.h, geo2d_color_image->h, geo2d_color_image->memory, 0));
+    ////////////////////////////////
+    // Create image view
 
     VkImageViewCreateInfo image_view_create_info = {
       .sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -1351,13 +1472,13 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
       .subresourceRange.baseArrayLayer = 0,
       .subresourceRange.layerCount     = 1,
     };
-    VK_Assert(vkCreateImageView(r_vk_state->logical_device.h, &image_view_create_info, NULL, &geo2d_color_image->view));
+    VK_Assert(vkCreateImageView(r_vk_ldevice()->h, &image_view_create_info, NULL, &geo2d_color_image->view));
 
     // Create geo3d_color sampler descriptor set
     r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind_Tex2D,
-                                  1, 16, NULL, &geo2d_color_image->view,
-                                  &r_vk_state->samplers[R_Tex2DSampleKind_Nearest],
-                                  geo2d_color_ds);
+                              1, 16, NULL, &geo2d_color_image->view,
+                              &r_vk_state->samplers[R_Tex2DSampleKind_Nearest],
+                              geo2d_color_ds);
   }
 
   // scratch color image and its sampler descriptor set
@@ -1382,17 +1503,21 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
     create_info.sharingMode       = VK_SHARING_MODE_EXCLUSIVE;
     create_info.samples           = VK_SAMPLE_COUNT_1_BIT;
     create_info.flags             = 0; // Optional
-    VK_Assert(vkCreateImage(r_vk_state->logical_device.h, &create_info, NULL, &image->h));
+    VK_Assert(vkCreateImage(r_vk_ldevice()->h, &create_info, NULL, &image->h));
+
+    ////////////////////////////////
+    // Allocate memory
 
     VkMemoryRequirements mem_requirements;
-    vkGetImageMemoryRequirements(r_vk_state->logical_device.h, image->h, &mem_requirements);
+    vkGetImageMemoryRequirements(r_vk_ldevice()->h, image->h, &mem_requirements);
 
-    VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-    VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT; 
-    alloc_info.allocationSize = mem_requirements.size;
-    alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
-    VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &image->memory));
-    VK_Assert(vkBindImageMemory(r_vk_state->logical_device.h, image->h, image->memory, 0));
+    VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_NonLinear, mem_requirements, property_flags, 0);
+    VK_Assert(vkBindImageMemory(r_vk_ldevice()->h, image->h, memory->h, memory->offset));
+    image->memory = memory;
+
+    ////////////////////////////////
+    // Create image view
 
     VkImageViewCreateInfo image_view_create_info = {
       .sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -1405,13 +1530,13 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
       .subresourceRange.baseArrayLayer = 0,
       .subresourceRange.layerCount     = 1,
     };
-    VK_Assert(vkCreateImageView(r_vk_state->logical_device.h, &image_view_create_info, NULL, &image->view));
+    VK_Assert(vkCreateImageView(r_vk_ldevice()->h, &image_view_create_info, NULL, &image->view));
 
     // Create staging color sampler descriptor set
     r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind_Tex2D,
-                                  1, 16, NULL, &image->view,
-                                  &r_vk_state->samplers[R_Tex2DSampleKind_Nearest],
-                                  ds);
+                              1, 16, NULL, &image->view,
+                              &r_vk_state->samplers[R_Tex2DSampleKind_Nearest],
+                              ds);
     image->format = format;
     image->extent = extent;
   }
@@ -1421,6 +1546,9 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
     geo3d_color_image->format        = swapchain->format;
     geo3d_color_image->extent.width  = swapchain->extent.width;
     geo3d_color_image->extent.height = swapchain->extent.height;
+
+    ////////////////////////////////
+    // Create image
 
     VkImageCreateInfo create_info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
     create_info.imageType         = VK_IMAGE_TYPE_2D;
@@ -1436,18 +1564,21 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
     create_info.sharingMode       = VK_SHARING_MODE_EXCLUSIVE;
     create_info.samples           = VK_SAMPLE_COUNT_1_BIT;
     create_info.flags             = 0; // Optional
-    VK_Assert(vkCreateImage(r_vk_state->logical_device.h, &create_info, NULL, &geo3d_color_image->h));
+    VK_Assert(vkCreateImage(r_vk_ldevice()->h, &create_info, NULL, &geo3d_color_image->h));
+
+    ////////////////////////////////
+    // Allocate memory
 
     VkMemoryRequirements mem_requirements;
-    vkGetImageMemoryRequirements(r_vk_state->logical_device.h, geo3d_color_image->h, &mem_requirements);
+    vkGetImageMemoryRequirements(r_vk_ldevice()->h, geo3d_color_image->h, &mem_requirements);
 
-    VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-    VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-    alloc_info.allocationSize = mem_requirements.size;
-    alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
+    VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_NonLinear, mem_requirements, property_flags, 0);
+    VK_Assert(vkBindImageMemory(r_vk_ldevice()->h, geo3d_color_image->h, memory->h, memory->offset));
+    geo3d_color_image->memory = memory;
 
-    VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &geo3d_color_image->memory));
-    VK_Assert(vkBindImageMemory(r_vk_state->logical_device.h, geo3d_color_image->h, geo3d_color_image->memory, 0));
+    ////////////////////////////////
+    // Create image view
 
     VkImageViewCreateInfo image_view_create_info = {
       .sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -1460,13 +1591,13 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
       .subresourceRange.baseArrayLayer = 0,
       .subresourceRange.layerCount     = 1,
     };
-    VK_Assert(vkCreateImageView(r_vk_state->logical_device.h, &image_view_create_info, NULL, &geo3d_color_image->view));
+    VK_Assert(vkCreateImageView(r_vk_ldevice()->h, &image_view_create_info, NULL, &geo3d_color_image->view));
 
     // create geo3d_color sampler descriptor set
     r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind_Tex2D,
-        1, 16, NULL, &geo3d_color_image->view,
-        &r_vk_state->samplers[R_Tex2DSampleKind_Nearest],
-        geo3d_color_ds);
+                              1, 16, NULL, &geo3d_color_image->view,
+                              &r_vk_state->samplers[R_Tex2DSampleKind_Nearest],
+                              geo3d_color_ds);
   }
 
   // create geo3d_normal_depth_image and its sampler descriptor set
@@ -1474,6 +1605,9 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
     geo3d_normal_depth_image->format        = VK_FORMAT_R32G32B32A32_SFLOAT; // first 3 is normal, last w is depth
     geo3d_normal_depth_image->extent.width  = swapchain->extent.width;
     geo3d_normal_depth_image->extent.height = swapchain->extent.height;
+
+    ////////////////////////////////
+    // Create image
 
     VkImageCreateInfo create_info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
     create_info.imageType         = VK_IMAGE_TYPE_2D;
@@ -1489,18 +1623,21 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
     create_info.sharingMode       = VK_SHARING_MODE_EXCLUSIVE;
     create_info.samples           = VK_SAMPLE_COUNT_1_BIT;
     create_info.flags             = 0; // Optional
-    VK_Assert(vkCreateImage(r_vk_state->logical_device.h, &create_info, NULL, &geo3d_normal_depth_image->h));
+    VK_Assert(vkCreateImage(r_vk_ldevice()->h, &create_info, NULL, &geo3d_normal_depth_image->h));
+
+    ////////////////////////////////
+    // Allocate memory
 
     VkMemoryRequirements mem_requirements;
-    vkGetImageMemoryRequirements(r_vk_state->logical_device.h, geo3d_normal_depth_image->h, &mem_requirements);
+    vkGetImageMemoryRequirements(r_vk_ldevice()->h, geo3d_normal_depth_image->h, &mem_requirements);
 
-    VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-    VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-    alloc_info.allocationSize = mem_requirements.size;
-    alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
+    VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_NonLinear, mem_requirements, property_flags, 0);
+    VK_Assert(vkBindImageMemory(r_vk_ldevice()->h, geo3d_normal_depth_image->h, memory->h, memory->offset));
+    geo3d_normal_depth_image->memory = memory;
 
-    VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &geo3d_normal_depth_image->memory));
-    VK_Assert(vkBindImageMemory(r_vk_state->logical_device.h, geo3d_normal_depth_image->h, geo3d_normal_depth_image->memory, 0));
+    ////////////////////////////////
+    // Create image view
 
     VkImageViewCreateInfo image_view_create_info =
     {
@@ -1514,13 +1651,13 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
       .subresourceRange.baseArrayLayer = 0,
       .subresourceRange.layerCount     = 1,
     };
-    VK_Assert(vkCreateImageView(r_vk_state->logical_device.h, &image_view_create_info, NULL, &geo3d_normal_depth_image->view));
+    VK_Assert(vkCreateImageView(r_vk_ldevice()->h, &image_view_create_info, NULL, &geo3d_normal_depth_image->view));
 
     // create sampler descriptor set
     r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind_Tex2D,
-        1, 16, NULL, &geo3d_normal_depth_image->view,
-        &r_vk_state->samplers[R_Tex2DSampleKind_Nearest],
-        geo3d_normal_depth_ds);
+                              1, 16, NULL, &geo3d_normal_depth_image->view,
+                              &r_vk_state->samplers[R_Tex2DSampleKind_Nearest],
+                              geo3d_normal_depth_ds);
   }
 
   // create geo3d_depth_image
@@ -1579,18 +1716,21 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
     // If you were using a 3D texture for a voxel terrain, for example
     //      then you could use this avoid allocating memory to storage large volumes of "air" values
     create_info.flags = 0; // Optional
-    VK_Assert(vkCreateImage(r_vk_state->logical_device.h, &create_info, NULL, &geo3d_depth_image->h));
+    VK_Assert(vkCreateImage(r_vk_ldevice()->h, &create_info, NULL, &geo3d_depth_image->h));
+
+    ////////////////////////////////
+    // Allocate memory
 
     VkMemoryRequirements mem_requirements;
-    vkGetImageMemoryRequirements(r_vk_state->logical_device.h, geo3d_depth_image->h, &mem_requirements);
+    vkGetImageMemoryRequirements(r_vk_ldevice()->h, geo3d_depth_image->h, &mem_requirements);
 
-    VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-    VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-    alloc_info.allocationSize = mem_requirements.size;
-    alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
+    VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_NonLinear, mem_requirements, property_flags, 0);
+    VK_Assert(vkBindImageMemory(r_vk_ldevice()->h, geo3d_depth_image->h, memory->h, memory->offset));
+    geo3d_depth_image->memory = memory;
 
-    VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &geo3d_depth_image->memory));
-    VK_Assert(vkBindImageMemory(r_vk_state->logical_device.h, geo3d_depth_image->h, geo3d_depth_image->memory, 0));
+    ////////////////////////////////
+    // Create image view
 
     VkImageViewCreateInfo image_view_create_info =
     {
@@ -1604,7 +1744,7 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
       .subresourceRange.baseArrayLayer = 0,
       .subresourceRange.layerCount     = 1,
     };
-    VK_Assert(vkCreateImageView(r_vk_state->logical_device.h, &image_view_create_info, NULL, &geo3d_depth_image->view));
+    VK_Assert(vkCreateImageView(r_vk_ldevice()->h, &image_view_create_info, NULL, &geo3d_depth_image->view));
   }
 
   // Create geo3d_pre_depth_image (for z pre pass)
@@ -1627,18 +1767,21 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
     create_info.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
     create_info.samples       = VK_SAMPLE_COUNT_1_BIT;
     create_info.flags         = 0; // Optional
-    VK_Assert(vkCreateImage(r_vk_state->logical_device.h, &create_info, NULL, &geo3d_pre_depth_image->h));
+    VK_Assert(vkCreateImage(r_vk_ldevice()->h, &create_info, NULL, &geo3d_pre_depth_image->h));
+
+    ////////////////////////////////
+    // Allocate memory
 
     VkMemoryRequirements mem_requirements;
-    vkGetImageMemoryRequirements(r_vk_state->logical_device.h, geo3d_pre_depth_image->h, &mem_requirements);
+    vkGetImageMemoryRequirements(r_vk_ldevice()->h, geo3d_pre_depth_image->h, &mem_requirements);
 
-    VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-    VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-    alloc_info.allocationSize = mem_requirements.size;
-    alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
+    VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_NonLinear, mem_requirements, property_flags, 0);
+    VK_Assert(vkBindImageMemory(r_vk_ldevice()->h, geo3d_pre_depth_image->h, memory->h, memory->offset));
+    geo3d_pre_depth_image->memory = memory;
 
-    VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &geo3d_pre_depth_image->memory));
-    VK_Assert(vkBindImageMemory(r_vk_state->logical_device.h, geo3d_pre_depth_image->h, geo3d_pre_depth_image->memory, 0));
+    ////////////////////////////////
+    // Create image view
 
     VkImageViewCreateInfo image_view_create_info =
     {
@@ -1652,13 +1795,13 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
       .subresourceRange.baseArrayLayer = 0,
       .subresourceRange.layerCount     = 1,
     };
-    VK_Assert(vkCreateImageView(r_vk_state->logical_device.h, &image_view_create_info, NULL, &geo3d_pre_depth_image->view));
+    VK_Assert(vkCreateImageView(r_vk_ldevice()->h, &image_view_create_info, NULL, &geo3d_pre_depth_image->view));
 
     // create sampler descriptor set
     r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind_Tex2D,
-                                  1,16,NULL,&geo3d_pre_depth_image->view,
-                                  &r_vk_state->samplers[R_Tex2DSampleKind_Nearest],
-                                  geo3d_pre_depth_ds);
+                              1,16,NULL,&geo3d_pre_depth_image->view,
+                              &r_vk_state->samplers[R_Tex2DSampleKind_Nearest],
+                              geo3d_pre_depth_ds);
   }
   return ret;
 }
@@ -1666,68 +1809,77 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
 internal void
 r_vk_render_targets_destroy(R_VK_RenderTargets *render_targets)
 {
+  // FIXME: cleanup this mess
+
   // destroy swapchain
   for(U64 i = 0; i < render_targets->swapchain.image_count; i++)
   {
-    vkDestroyImageView(r_vk_state->logical_device.h, render_targets->swapchain.image_views[i], NULL);
+    vkDestroyImageView(r_vk_ldevice()->h, render_targets->swapchain.image_views[i], NULL);
 
     // TODO(XXX): we should be able to reuse these semaphores
     // TODO(BUG): it's not safe to destroy semaphore here, fix it later
     //            can't be called on VkSemaphore 0x4a000000004a that is currently in use by VkQueue
-    vkDestroySemaphore(r_vk_state->logical_device.h, render_targets->swapchain.submit_semaphores[i], NULL);
+    vkDestroySemaphore(r_vk_ldevice()->h, render_targets->swapchain.submit_semaphores[i], NULL);
   }
-  vkDestroySwapchainKHR(r_vk_state->logical_device.h, render_targets->swapchain.h, NULL);
+  vkDestroySwapchainKHR(r_vk_ldevice()->h, render_targets->swapchain.h, NULL);
 
   // stage color image
-  vkDestroyImageView(r_vk_state->logical_device.h, render_targets->stage_color_image.view, NULL);
-  vkDestroyImage(r_vk_state->logical_device.h, render_targets->stage_color_image.h, NULL);
+  vkDestroyImageView(r_vk_ldevice()->h, render_targets->stage_color_image.view, NULL);
+  vkDestroyImage(r_vk_ldevice()->h, render_targets->stage_color_image.h, NULL);
   r_vk_descriptor_set_destroy(&render_targets->stage_color_ds);
-  vkFreeMemory(r_vk_state->logical_device.h, render_targets->stage_color_image.memory, NULL);
+  r_vk_memory_release(render_targets->stage_color_image.memory);
 
   // stage id image
-  vkDestroyImageView(r_vk_state->logical_device.h, render_targets->stage_id_image.view, NULL);
-  vkDestroyImage(r_vk_state->logical_device.h, render_targets->stage_id_image.h, NULL);
-  vkFreeMemory(r_vk_state->logical_device.h, render_targets->stage_id_image.memory, NULL);
+  vkDestroyImageView(r_vk_ldevice()->h, render_targets->stage_id_image.view, NULL);
+  vkDestroyImage(r_vk_ldevice()->h, render_targets->stage_id_image.h, NULL);
+  r_vk_memory_release(render_targets->stage_id_image.memory);
+
+  // Scratch color image
+  vkDestroyImageView(r_vk_ldevice()->h, render_targets->scratch_color_image.view, NULL);
+  vkDestroyImage(r_vk_ldevice()->h, render_targets->scratch_color_image.h, NULL);
+  r_vk_descriptor_set_destroy(&render_targets->scratch_color_ds);
+  r_vk_memory_release(render_targets->scratch_color_image.memory);
 
   // stage id buffer (cpu)
-  vkUnmapMemory(r_vk_state->logical_device.h, render_targets->stage_id_cpu.memory);
-  vkDestroyBuffer(r_vk_state->logical_device.h, render_targets->stage_id_cpu.h, NULL);
-  vkFreeMemory(r_vk_state->logical_device.h, render_targets->stage_id_cpu.memory, NULL);
+  // vkUnmapMemory(r_vk_ldevice()->h, render_targets->stage_id_cpu.memory);
+  vkDestroyBuffer(r_vk_ldevice()->h, render_targets->stage_id_cpu.h, NULL);
+  r_vk_memory_release(render_targets->stage_id_cpu.memory);
 
   // edge image
-  vkDestroyImageView(r_vk_state->logical_device.h, render_targets->edge_image.view, NULL);
-  vkDestroyImage(r_vk_state->logical_device.h, render_targets->edge_image.h, NULL);
+  vkDestroyImageView(r_vk_ldevice()->h, render_targets->edge_image.view, NULL);
+  vkDestroyImage(r_vk_ldevice()->h, render_targets->edge_image.h, NULL);
   r_vk_descriptor_set_destroy(&render_targets->edge_ds);
-  vkFreeMemory(r_vk_state->logical_device.h, render_targets->edge_image.memory, NULL);
+  r_vk_memory_release(render_targets->edge_image.memory);
 
   // geo2d color image
-  vkDestroyImageView(r_vk_state->logical_device.h, render_targets->geo2d_color_image.view, NULL);
-  vkDestroyImage(r_vk_state->logical_device.h, render_targets->geo2d_color_image.h, NULL);
+  vkDestroyImageView(r_vk_ldevice()->h, render_targets->geo2d_color_image.view, NULL);
+  vkDestroyImage(r_vk_ldevice()->h, render_targets->geo2d_color_image.h, NULL);
   r_vk_descriptor_set_destroy(&render_targets->geo2d_color_ds);
-  vkFreeMemory(r_vk_state->logical_device.h, render_targets->geo2d_color_image.memory, NULL);
+  // FIXME: replace it with r_vk_memory_release
+  r_vk_memory_release(render_targets->geo2d_color_image.memory);
 
   // geo3d color image
-  vkDestroyImageView(r_vk_state->logical_device.h, render_targets->geo3d_color_image.view, NULL);
-  vkDestroyImage(r_vk_state->logical_device.h, render_targets->geo3d_color_image.h, NULL);
+  vkDestroyImageView(r_vk_ldevice()->h, render_targets->geo3d_color_image.view, NULL);
+  vkDestroyImage(r_vk_ldevice()->h, render_targets->geo3d_color_image.h, NULL);
   r_vk_descriptor_set_destroy(&render_targets->geo3d_color_ds);
-  vkFreeMemory(r_vk_state->logical_device.h, render_targets->geo3d_color_image.memory, NULL);
+  r_vk_memory_release(render_targets->geo3d_color_image.memory);
 
   // geo3d normal depth image
-  vkDestroyImageView(r_vk_state->logical_device.h, render_targets->geo3d_normal_depth_image.view, NULL);
-  vkDestroyImage(r_vk_state->logical_device.h, render_targets->geo3d_normal_depth_image.h, NULL);
+  vkDestroyImageView(r_vk_ldevice()->h, render_targets->geo3d_normal_depth_image.view, NULL);
+  vkDestroyImage(r_vk_ldevice()->h, render_targets->geo3d_normal_depth_image.h, NULL);
   r_vk_descriptor_set_destroy(&render_targets->geo3d_normal_depth_ds);
-  vkFreeMemory(r_vk_state->logical_device.h, render_targets->geo3d_normal_depth_image.memory, NULL);
+  r_vk_memory_release(render_targets->geo3d_normal_depth_image.memory);
 
   // geo3d depth image
-  vkDestroyImageView(r_vk_state->logical_device.h, render_targets->geo3d_depth_image.view, NULL);
-  vkDestroyImage(r_vk_state->logical_device.h, render_targets->geo3d_depth_image.h, NULL);
-  vkFreeMemory(r_vk_state->logical_device.h, render_targets->geo3d_depth_image.memory, NULL);
+  vkDestroyImageView(r_vk_ldevice()->h, render_targets->geo3d_depth_image.view, NULL);
+  vkDestroyImage(r_vk_ldevice()->h, render_targets->geo3d_depth_image.h, NULL);
+  r_vk_memory_release(render_targets->geo3d_depth_image.memory);
 
   // geo3d_pre_depth_image
-  vkDestroyImageView(r_vk_state->logical_device.h, render_targets->geo3d_pre_depth_image.view, NULL);
-  vkDestroyImage(r_vk_state->logical_device.h, render_targets->geo3d_pre_depth_image.h, NULL);
+  vkDestroyImageView(r_vk_ldevice()->h, render_targets->geo3d_pre_depth_image.view, NULL);
+  vkDestroyImage(r_vk_ldevice()->h, render_targets->geo3d_pre_depth_image.h, NULL);
   r_vk_descriptor_set_destroy(&render_targets->geo3d_pre_depth_ds);
-  vkFreeMemory(r_vk_state->logical_device.h, render_targets->geo3d_pre_depth_image.memory, NULL);
+  r_vk_memory_release(render_targets->geo3d_pre_depth_image.memory);
 }
 
 //- descriptor
@@ -1772,7 +1924,7 @@ r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind kind, U64 set_count, U64 cap, V
         // You can leave flags to 0
         .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
       };
-      VK_Assert(vkCreateDescriptorPool(r_vk_state->logical_device.h, &pool_create_info, NULL, &pool->h));
+      VK_Assert(vkCreateDescriptorPool(r_vk_ldevice()->h, &pool_create_info, NULL, &pool->h));
 
     }
     else
@@ -1789,7 +1941,7 @@ r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind kind, U64 set_count, U64 cap, V
     set_alloc_info.descriptorPool     = pool->h;
     set_alloc_info.descriptorSetCount = alloc_count;
     set_alloc_info.pSetLayouts        = &set_layout.h;
-    VK_Assert(vkAllocateDescriptorSets(r_vk_state->logical_device.h, &set_alloc_info, temp_sets));
+    VK_Assert(vkAllocateDescriptorSets(r_vk_ldevice()->h, &set_alloc_info, temp_sets));
 
     for(U64 i = 0; i < alloc_count; i++) 
     {
@@ -2041,7 +2193,7 @@ r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind kind, U64 set_count, U64 cap, V
   // The updates are applied using vkUpdateDescriptorSets
   // It accepts two kinds of arrays as parameters: an array of VkWriteDescriptorSet and an array of VkCopyDescriptorSet
   // The latter can be used to copy descriptors to each other, as its name implies
-  vkUpdateDescriptorSets(r_vk_state->logical_device.h, writes_count, writes, 0, NULL);
+  vkUpdateDescriptorSets(r_vk_ldevice()->h, writes_count, writes, 0, NULL);
   scratch_end(scratch);
   ProfEnd();
 }
@@ -2049,7 +2201,7 @@ r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind kind, U64 set_count, U64 cap, V
 internal void
 r_vk_descriptor_set_destroy(R_VK_DescriptorSet *set)
 {
-  VK_Assert(vkFreeDescriptorSets(r_vk_state->logical_device.h, set->pool->h, 1, &set->h));
+  VK_Assert(vkFreeDescriptorSets(r_vk_ldevice()->h, set->pool->h, 1, &set->h));
   set->pool->cmt -= 1;
   if((set->pool->cmt+1) == set->pool->cap)
   {
@@ -2258,8 +2410,9 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
   fshad_stage.pName  = "main";
   VkPipelineShaderStageCreateInfo shad_stages[2] = { vshad_stage, fshad_stage };
 
-  // Programmable stages (vertex and fragment)
   /////////////////////////////////////////////////////////////////////////////////
+  // Programmable stages (vertex and fragment)
+
   // Fixed function stages
   // The older graphics APIs provided default state for most of the stages of the graphcis pipeline
   // In Vulkan you have to be explicit about most pipeline states as it'll be baked into an immutable pipeline state object
@@ -3209,7 +3362,7 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
     create_info.pPushConstantRanges    = push_constant_ranges; // Optional
 
     // The pipeline layout will be referenced throughout the program's lifetime, so we should destroy it at the end
-    VK_Assert(vkCreatePipelineLayout(r_vk_state->logical_device.h, &create_info, NULL, &pipeline.layout));
+    VK_Assert(vkCreatePipelineLayout(r_vk_ldevice()->h, &create_info, NULL, &pipeline.layout));
   }
 
   // Rendering info
@@ -3339,7 +3492,7 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
     // A pipeline cache can be used to store and reuse data relevant to pipeline creation across multiple calls to vkCreateGraphcisPipelines and even across program executions if the 
     // cache is stored to a file
     // This makes it possbile to significantly speed up pipeline creation at a later time
-    VK_Assert(vkCreateGraphicsPipelines(r_vk_state->logical_device.h, VK_NULL_HANDLE, 1, &create_info, NULL, &pipeline.h));
+    VK_Assert(vkCreateGraphicsPipelines(r_vk_ldevice()->h, VK_NULL_HANDLE, 1, &create_info, NULL, &pipeline.h));
   }
   scratch_end(scratch);
   return pipeline;
@@ -3453,7 +3606,7 @@ r_vk_cmp_pipeline(R_VK_PipelineKind kind)
   layout_info.pPushConstantRanges = NULL;
 
   VkPipelineLayout layout;
-  VK_Assert(vkCreatePipelineLayout(r_vk_state->logical_device.h, &layout_info, NULL, &layout));
+  VK_Assert(vkCreatePipelineLayout(r_vk_ldevice()->h, &layout_info, NULL, &layout));
 
   ///////////////////////////////////////////////////////////////////////////////////////
   // create pipeline
@@ -3463,7 +3616,7 @@ r_vk_cmp_pipeline(R_VK_PipelineKind kind)
   pipeline_info.layout = layout;
   pipeline_info.stage = shad_stage;
 
-  VK_Assert(vkCreateComputePipelines(r_vk_state->logical_device.h, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &ret.h));
+  VK_Assert(vkCreateComputePipelines(r_vk_ldevice()->h, VK_NULL_HANDLE, 1, &pipeline_info, NULL, &ret.h));
   ret.layout = layout;
   scratch_end(scratch);
   return ret;
@@ -3544,7 +3697,7 @@ r_vk_sampler2d(R_Tex2DSampleKind kind)
   create_info.minLod     = 0.0f;
   create_info.maxLod     = 0.0f;
 
-  VK_Assert(vkCreateSampler(r_vk_state->logical_device.h, &create_info, NULL, &sampler));
+  VK_Assert(vkCreateSampler(r_vk_ldevice()->h, &create_info, NULL, &sampler));
   // Note the sampler does not reference a VkImage anywhere
   // The sampler is a distinct object that provides an interface to extrat colors from a texture
   // It can be applied to any image you want, whether it is 1D, 2D or 3D
@@ -3663,7 +3816,7 @@ r_vk_cmd_end(VkCommandBuffer cmd_buf)
     .pCommandBuffers = &cmd_buf,
   };
   VK_Assert(vkEndCommandBuffer(cmd_buf));
-  VK_Assert(vkQueueSubmit(r_vk_state->logical_device.gfx_queue, 1, &submit_info, VK_NULL_HANDLE));
+  VK_Assert(vkQueueSubmit(r_vk_ldevice()->gfx_queue, 1, &submit_info, VK_NULL_HANDLE));
 }
 
 ////////////////////////////////
@@ -3895,8 +4048,8 @@ r_init(OS_Handle window, B32 debug)
   // It should also be noted that window surfaces are entirely optional component in Vulkan, if you just need off-screen rendering.
   // Vulkan allows you to do that without hacks like creating an invisible window (necessary for OpenGL)
 
-  R_VK_Surface surface = {0};
-  surface.h = os_vulkan_surface_from_window(window, r_vk_state->instance);
+  // FIXME: this one is only used to query some information, we may want to destroy it after done use
+  VkSurfaceKHR vk_surface = os_vulkan_surface_from_window(window, r_vk_state->instance);
 
   ////////////////////////////////
   //~ Pick the physical device
@@ -3915,27 +4068,31 @@ r_init(OS_Handle window, B32 debug)
     VkPhysicalDevice *pdevices_src = push_array(scratch.arena, VkPhysicalDevice, pdevice_src_count);
     VK_Assert(vkEnumeratePhysicalDevices(r_vk_state->instance, &pdevice_src_count, pdevices_src));
 
-    U64 pdevice_dst_count = 0;
-    R_VK_PhysicalDevice *pdevices_dst = push_array(arena, R_VK_PhysicalDevice, pdevice_src_count);
+    U64 pdevice_candidate_count = 0;
+    R_VK_PhysicalDevice *pdevice_candidates = push_array(scratch.arena, R_VK_PhysicalDevice, pdevice_src_count);
 
+    // Gather physical devices information (properties, features, extensions)
     for(U64 i = 0; i < pdevice_src_count; i++)
     {
+      // Properties
       VkPhysicalDeviceProperties properties;
-      VkPhysicalDeviceFeatures features;
       vkGetPhysicalDeviceProperties(pdevices_src[i], &properties);
+
+      // Features
+      VkPhysicalDeviceFeatures features;
       vkGetPhysicalDeviceFeatures(pdevices_src[i], &features);
 
-      // query physical device supported extensions
-      U32 ext_count;
-      VK_Assert(vkEnumerateDeviceExtensionProperties(pdevices_src[i], NULL, &ext_count, NULL));
-      VkExtensionProperties *extensions = push_array(scratch.arena, VkExtensionProperties, ext_count);
-      VK_Assert(vkEnumerateDeviceExtensionProperties(pdevices_src[i], NULL, &ext_count, extensions));
+      // Query physical device supported extensions
+      U32 extension_count;
+      VK_Assert(vkEnumerateDeviceExtensionProperties(pdevices_src[i], NULL, &extension_count, NULL));
+      VkExtensionProperties *extensions = push_array(scratch.arena, VkExtensionProperties, extension_count);
+      VK_Assert(vkEnumerateDeviceExtensionProperties(pdevices_src[i], NULL, &extension_count, extensions));
 
       // Check if current physical device supports all the required extensions
       U64 found = 0;
       for(U64 j = 0; j < ArrayCount(required_pdevice_ext_names); j++)
       {
-        for(U64 k = 0; k < ext_count; k++)
+        for(U64 k = 0; k < extension_count; k++)
         {
           if(strcmp(extensions[k].extensionName, required_pdevice_ext_names[j]))
           {
@@ -3954,27 +4111,31 @@ r_init(OS_Handle window, B32 debug)
       if(features.fillModeNonSolid == VK_FALSE)  continue;
       if(features.wideLines == VK_FALSE)         continue;
 
-      R_VK_PhysicalDevice *dst = &pdevices_dst[pdevice_dst_count++];
-      dst->h = pdevices_src[i];
-      dst->properties = properties;
-      dst->features = features;
-      dst->extensions = push_array(arena, VkExtensionProperties, ext_count);
-      MemoryCopy(dst->extensions, extensions, sizeof(VkExtensionProperties)*ext_count);
-      dst->extension_count = ext_count;
+      R_VK_PhysicalDevice *candidate = &pdevice_candidates[pdevice_candidate_count++];
+      candidate->h = pdevices_src[i];
+      candidate->properties = properties;
+      candidate->features = features;
+      candidate->extensions = extensions;
+      candidate->extension_count = extension_count;
     }
 
-    // pick the most performant physical device
-    S32 pdevice_idx = -1;
-    U64 pdevice_score = 0;
-    for(U64 i = 0; i < pdevice_dst_count; i++)
+    // Pick the most performant physical device
+    S32 best_pdevice_candidate_idx = -1;
+    U64 best_pdevice_candidate_score = 0;
+    for(U64 i = 0; i < pdevice_candidate_count; i++)
     {
-      R_VK_PhysicalDevice *pdevice = &pdevices_dst[i];
+      R_VK_PhysicalDevice *pdevice = &pdevice_candidates[i];
       U64 score = 0;
+
+      ////////////////////////////////
+      // Misc
 
       if(pdevice->properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {score += 1;}
       // score += properties.limits.maxImageDimension2D;
 
+      ////////////////////////////////
       // Querying details of swap chain support
+
       // Just checking if a swap chain is avaiable is not sufficient, because it may not actually be compatible with our window surface
       // Creating a swap chain also involves a lot more settings than instance and device creation
       //   so we need to query for some more details before we're able to proceed
@@ -3987,43 +4148,42 @@ r_init(OS_Handle window, B32 debug)
       VkSurfaceCapabilitiesKHR surface_caps;
       // This function takes the specified **VkPhysicalDevice** and **VkSurfaceKHR window surface** into account when determining the supported capabilities.
       // All of the support querying functions have these two as first parameters, because they are the **core components** of the swap chain
-      VK_Assert(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(pdevices_src[i], surface.h, &surface_caps));
+      VK_Assert(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(pdevices_src[i], vk_surface, &surface_caps));
 
       U32 surface_format_count;
-      VK_Assert(vkGetPhysicalDeviceSurfaceFormatsKHR(pdevices_src[i], surface.h, &surface_format_count, NULL));
-      VkSurfaceFormatKHR *surface_formats = push_array(scratch.arena, VkSurfaceFormatKHR, surface_format_count);
-      VK_Assert(vkGetPhysicalDeviceSurfaceFormatsKHR(pdevices_src[i], surface.h, &surface_format_count, surface_formats));
+      VK_Assert(vkGetPhysicalDeviceSurfaceFormatsKHR(pdevices_src[i], vk_surface, &surface_format_count, NULL));
+      // VkSurfaceFormatKHR *surface_formats = push_array(scratch.arena, VkSurfaceFormatKHR, surface_format_count);
+      // VK_Assert(vkGetPhysicalDeviceSurfaceFormatsKHR(pdevices_src[i], surface.h, &surface_format_count, surface_formats));
 
       U32 surface_present_mode_count;
-      VK_Assert(vkGetPhysicalDeviceSurfacePresentModesKHR(pdevices_src[i], surface.h, &surface_present_mode_count, NULL));
-      VkPresentModeKHR *surface_present_modes = push_array(scratch.arena, VkPresentModeKHR, surface_present_mode_count);
-      VK_Assert(vkGetPhysicalDeviceSurfacePresentModesKHR(pdevices_src[i], surface.h, &surface_present_mode_count, surface_present_modes));
+      VK_Assert(vkGetPhysicalDeviceSurfacePresentModesKHR(pdevices_src[i], vk_surface, &surface_present_mode_count, NULL));
+      // VkPresentModeKHR *surface_present_modes = push_array(scratch.arena, VkPresentModeKHR, surface_present_mode_count);
+      // VK_Assert(vkGetPhysicalDeviceSurfacePresentModesKHR(pdevices_src[i], surface.h, &surface_present_mode_count, surface_present_modes));
 
       // For now, swap chain support is sufficient if there is at least one supported image format and one supported presentation mode given the window surface we have
       if(surface_format_count == 0 || surface_present_mode_count == 0) continue;
       score += 1;
-      if(score > pdevice_score)
+
+      if(score > best_pdevice_candidate_score)
       {
-        pdevice_idx = i;
-        pdevice_score = score;
-
-        surface.caps = surface_caps;
-        surface.format_count = ClampBot(surface_format_count, ArrayCount(surface.formats));
-        MemoryCopy(surface.formats, surface_formats, sizeof(VkSurfaceFormatKHR) * surface.format_count);
-
-        surface.prest_mode_count = ClampBot(surface_present_mode_count, ArrayCount(surface.prest_modes));
-        MemoryCopy(surface.prest_modes, surface_present_modes, sizeof(VkPresentModeKHR) * surface.prest_mode_count);
+        best_pdevice_candidate_idx = i;
+        best_pdevice_candidate_score = score;
       }
     }
-    AssertAlways(pdevice_idx >= 0 && "No suitable physical device was founed");
+    AssertAlways(best_pdevice_candidate_idx >= 0 && "No suitable physical device was founed");
 
-    R_VK_PhysicalDevice *pdevice = &pdevices_dst[pdevice_idx];
-    vkGetPhysicalDeviceMemoryProperties(pdevice->h, &pdevice->mem_properties);
-    pdevice->depth_image_format = r_vk_optimal_depth_format_from_pdevice(pdevice->h);
+    // Allocate physical device
+    R_VK_PhysicalDevice *src = &pdevice_candidates[best_pdevice_candidate_idx];
+    R_VK_PhysicalDevice *dst = push_array(r_vk_state->arena, R_VK_PhysicalDevice, 1);
+    *dst = *src;
+    dst->extensions = push_array(r_vk_state->arena, VkExtensionProperties, src->extension_count);
+    MemoryCopy(&dst->extensions, &src->extensions, sizeof(VkExtensionProperties)*src->extension_count);
 
-    r_vk_state->physical_devices      = pdevices_dst;
-    r_vk_state->physical_device_count = pdevice_dst_count;
-    r_vk_state->physical_device_idx   = pdevice_idx;
+    // Get memory properties & depth image format for the physical device we picked
+    vkGetPhysicalDeviceMemoryProperties(dst->h, &dst->mem_properties);
+    dst->depth_image_format = r_vk_optimal_depth_format_from_pdevice(dst->h);
+
+    r_vk_state->physical_device = dst;
   }
 
   ////////////////////////////////
@@ -4087,7 +4247,7 @@ r_init(OS_Handle window, B32 debug)
       // }
 
       VkBool32 present_supported = VK_FALSE;
-      vkGetPhysicalDeviceSurfaceSupportKHR(r_vk_pdevice()->h, i, surface.h, &present_supported);
+      vkGetPhysicalDeviceSurfaceSupportKHR(r_vk_pdevice()->h, i, vk_surface, &present_supported);
       if(present_supported == VK_TRUE)
       {
         r_vk_pdevice()->prest_queue_family_index = i;
@@ -4115,6 +4275,8 @@ r_init(OS_Handle window, B32 debug)
   // The currently available drivers will only allow you to create a small number of queues for each queue family
   // And you don't really need more than one. That's because you can create all of the commands buffers on multiple threads and then submit them all at once on the main thread with a single low-overhead call
   {
+    R_VK_LogicalDevice *logical_device = push_array(r_vk_state->arena, R_VK_LogicalDevice, 1);
+
     const F32 gfx_queue_priority = 1.0f;
     const F32 prest_queue_priority = 1.0f;
 
@@ -4170,34 +4332,53 @@ r_init(OS_Handle window, B32 debug)
     // However, it is still a good idea to set them anyway to be compatible with older implementations
     create_info.enabledLayerCount = enabled_layer_count;
     create_info.ppEnabledLayerNames = enabled_layers;
-    VK_Assert(vkCreateDevice(r_vk_pdevice()->h, &create_info, NULL, &r_vk_state->logical_device.h));
+    VK_Assert(vkCreateDevice(r_vk_pdevice()->h, &create_info, NULL, &(logical_device->h)));
 
     // Retrieving queue handles
     // The queues are automatically created along with the logical device, but we don't have a handle to itnerface with them yet
     // Also, device queues are implicitly cleaned up when the device is destroyed, so we don't need to do anything in cleanup
     // VkQueue graphics_queue;
     // The third parameter is queu index, since we're only creating a single queue from this family, we'll simply use index 0
-    vkGetDeviceQueue(r_vk_state->logical_device.h, r_vk_pdevice()->gfx_queue_family_index, 0, &r_vk_state->logical_device.gfx_queue);
+    vkGetDeviceQueue(logical_device->h, r_vk_pdevice()->gfx_queue_family_index, 0, &logical_device->gfx_queue);
     // VkQueue present_queue;
     // If the queue families are the same, then those two queue handler will be the same
-    vkGetDeviceQueue(r_vk_state->logical_device.h, r_vk_pdevice()->prest_queue_family_index, 0, &r_vk_state->logical_device.prest_queue);
-  }
+    vkGetDeviceQueue(logical_device->h, r_vk_pdevice()->prest_queue_family_index, 0, &logical_device->prest_queue);
 
-  R_VK_Device device = {0};
+    r_vk_state->logical_device = logical_device;
+  }
 
   ////////////////////////////////
   // Create Vulkan Memory Allocator
 
   {
     R_VK_MemoryAllocator *allocator = push_array(r_vk_state->arena, R_VK_MemoryAllocator, 1);
-    U64 heap_count = r_vk_pdevice()->mem_properties.memoryTYpeCount;
-    allocator->heaps = push_array(r_vk_state->arena, R_VK_MemoryHeap, heap_count);
-    for(U64 heap_idx = 0; heap_idx < heap_count; heap_idx++)
+
+    U64 physical_heap_count = r_vk_pdevice()->mem_properties.memoryHeapCount;
+    U64 logical_heap_count = r_vk_pdevice()->mem_properties.memoryTypeCount;
+    R_VK_PhysicalMemoryHeap *physical_heaps = push_array(r_vk_state->arena, R_VK_PhysicalMemoryHeap, physical_heap_count);
+    R_VK_LogicalMemoryHeap *logical_heaps = push_array(r_vk_state->arena, R_VK_LogicalMemoryHeap, logical_heap_count);
+
+    // Populate physical heaps
+    for(U64 pheap_idx = 0; pheap_idx < physical_heap_count; pheap_idx++)
     {
-      R_VK_MemoryHeap *heap = &heaps[heap_idx];
-      heap->heap_idx = heap_idx;
-      heap->propertyFlags = 
+      R_VK_PhysicalMemoryHeap *pheap = &physical_heaps[pheap_idx];
+      pheap->flags = r_vk_pdevice()->mem_properties.memoryHeaps[pheap_idx].flags;
+      pheap->cap = r_vk_pdevice()->mem_properties.memoryHeaps[pheap_idx].size;
     }
+
+    // Populate logical heaps
+    for(U64 lheap_idx = 0; lheap_idx < logical_heap_count; lheap_idx++)
+    {
+      R_VK_LogicalMemoryHeap *lheap = &logical_heaps[lheap_idx];
+      lheap->physical_heap_idx = r_vk_pdevice()->mem_properties.memoryTypes[lheap_idx].heapIndex;
+      lheap->property_flags = r_vk_pdevice()->mem_properties.memoryTypes[lheap_idx].propertyFlags;
+    }
+
+    allocator->physical_heap_count = physical_heap_count;
+    allocator->physical_heaps = physical_heaps;
+    allocator->logical_heap_count = logical_heap_count;
+    allocator->logical_heaps = logical_heaps;
+    r_vk_state->allocator = allocator;
   }
 
   // Create a command pool for gfx queue, can be used to record draw call, image layout transition and copy staging buffer
@@ -4223,7 +4404,7 @@ r_init(OS_Handle window, B32 debug)
     // Command buffers are executed by submitting them on one of the device queues, like the graphcis and presentation queues we retrieved
     // Each command pool can only allocate command buffers that are submitted on a single type of queue
     // We're going to record commands for drawing, which is why we've chosen the graphcis queue family
-    VK_Assert(vkCreateCommandPool(r_vk_state->logical_device.h, &create_info, NULL, &r_vk_state->cmd_pool));
+    VK_Assert(vkCreateCommandPool(r_vk_ldevice()->h, &create_info, NULL, &r_vk_state->cmd_pool));
 
     VkCommandBufferAllocateInfo alloc_info = {
       .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -4232,7 +4413,7 @@ r_init(OS_Handle window, B32 debug)
       .commandBufferCount = 1,
     };
 
-    VK_Assert(vkAllocateCommandBuffers(r_vk_state->logical_device.h, &alloc_info, &r_vk_state->oneshot_cmd_buf));
+    VK_Assert(vkAllocateCommandBuffers(r_vk_ldevice()->h, &alloc_info, &r_vk_state->oneshot_cmd_buf));
   }
 
   // Create texture samplers
@@ -4272,7 +4453,7 @@ r_init(OS_Handle window, B32 debug)
       .codeSize = shad_code.size,
       .pCode = (U32 *)shad_code.str,
     };
-    VK_Assert(vkCreateShaderModule(r_vk_state->logical_device.h, &create_info, NULL, shad_mo));
+    VK_Assert(vkCreateShaderModule(r_vk_ldevice()->h, &create_info, NULL, shad_mo));
   }
 
   for(U64 kind = 0; kind < R_VK_FShadKind_COUNT; kind++)
@@ -4299,7 +4480,7 @@ r_init(OS_Handle window, B32 debug)
       .codeSize = shad_code.size,
       .pCode    = (U32 *)shad_code.str,
     };
-    VK_Assert(vkCreateShaderModule(r_vk_state->logical_device.h, &create_info, NULL, shad_mo));
+    VK_Assert(vkCreateShaderModule(r_vk_ldevice()->h, &create_info, NULL, shad_mo));
   }
 
   for(U64 kind = 0; kind < R_VK_CShadKind_COUNT; kind++)
@@ -4317,7 +4498,7 @@ r_init(OS_Handle window, B32 debug)
       .codeSize = shad_code.size,
       .pCode = (U32 *)shad_code.str,
     };
-    VK_Assert(vkCreateShaderModule(r_vk_state->logical_device.h, &create_info, NULL, shad_mo));
+    VK_Assert(vkCreateShaderModule(r_vk_ldevice()->h, &create_info, NULL, shad_mo));
   }
 
   ////////////////////////////////
@@ -4347,7 +4528,7 @@ r_init(OS_Handle window, B32 debug)
     VkDescriptorSetLayoutCreateInfo create_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
     create_info.bindingCount = 1;
     create_info.pBindings    = bindings;
-    VK_Assert(vkCreateDescriptorSetLayout(r_vk_state->logical_device.h, &create_info, NULL, &set_layout->h));
+    VK_Assert(vkCreateDescriptorSetLayout(r_vk_ldevice()->h, &create_info, NULL, &set_layout->h));
   }
   // R_VK_DescriptorSetKind_UBO_Geo2D
   {
@@ -4365,7 +4546,7 @@ r_init(OS_Handle window, B32 debug)
     VkDescriptorSetLayoutCreateInfo create_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
     create_info.bindingCount = 1;
     create_info.pBindings    = bindings;
-    VK_Assert(vkCreateDescriptorSetLayout(r_vk_state->logical_device.h, &create_info, NULL, &set_layout->h));
+    VK_Assert(vkCreateDescriptorSetLayout(r_vk_ldevice()->h, &create_info, NULL, &set_layout->h));
   }
   // R_VK_DescriptorSetKind_UBO_Geo3D
   {
@@ -4383,7 +4564,7 @@ r_init(OS_Handle window, B32 debug)
     VkDescriptorSetLayoutCreateInfo create_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
     create_info.bindingCount = 1;
     create_info.pBindings    = bindings;
-    VK_Assert(vkCreateDescriptorSetLayout(r_vk_state->logical_device.h, &create_info, NULL, &set_layout->h));
+    VK_Assert(vkCreateDescriptorSetLayout(r_vk_ldevice()->h, &create_info, NULL, &set_layout->h));
   }
   // R_VK_DescriptorSetKind_SBO_Geo3D_Joints
   {
@@ -4401,7 +4582,7 @@ r_init(OS_Handle window, B32 debug)
     VkDescriptorSetLayoutCreateInfo create_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
     create_info.bindingCount = 1;
     create_info.pBindings    = bindings;
-    VK_Assert(vkCreateDescriptorSetLayout(r_vk_state->logical_device.h, &create_info, NULL, &set_layout->h));
+    VK_Assert(vkCreateDescriptorSetLayout(r_vk_ldevice()->h, &create_info, NULL, &set_layout->h));
   }
   // R_VK_DescriptorSetKind_SBO_Geo3D_Materials
   {
@@ -4419,7 +4600,7 @@ r_init(OS_Handle window, B32 debug)
     VkDescriptorSetLayoutCreateInfo create_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
     create_info.bindingCount = 1;
     create_info.pBindings    = bindings;
-    VK_Assert(vkCreateDescriptorSetLayout(r_vk_state->logical_device.h, &create_info, NULL, &set_layout->h));
+    VK_Assert(vkCreateDescriptorSetLayout(r_vk_ldevice()->h, &create_info, NULL, &set_layout->h));
   }
   // R_VK_DescriptorSetKind_Tex2D
   {
@@ -4437,7 +4618,7 @@ r_init(OS_Handle window, B32 debug)
     VkDescriptorSetLayoutCreateInfo create_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
     create_info.bindingCount = 1;
     create_info.pBindings    = bindings;
-    VK_Assert(vkCreateDescriptorSetLayout(r_vk_state->logical_device.h, &create_info, NULL, &set_layout->h));
+    VK_Assert(vkCreateDescriptorSetLayout(r_vk_ldevice()->h, &create_info, NULL, &set_layout->h));
   }
   // R_VK_DescriptorSetKind_UBO_Geo3D_TileFrustum
   {
@@ -4455,7 +4636,7 @@ r_init(OS_Handle window, B32 debug)
     VkDescriptorSetLayoutCreateInfo create_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
     create_info.bindingCount = 1;
     create_info.pBindings    = bindings;
-    VK_Assert(vkCreateDescriptorSetLayout(r_vk_state->logical_device.h, &create_info, NULL, &set_layout->h));
+    VK_Assert(vkCreateDescriptorSetLayout(r_vk_ldevice()->h, &create_info, NULL, &set_layout->h));
   }
   // R_VK_DescriptorSetKind_UBO_Geo3D_LightCulling
   {
@@ -4473,7 +4654,7 @@ r_init(OS_Handle window, B32 debug)
     VkDescriptorSetLayoutCreateInfo create_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
     create_info.bindingCount = 1;
     create_info.pBindings    = bindings;
-    VK_Assert(vkCreateDescriptorSetLayout(r_vk_state->logical_device.h, &create_info, NULL, &set_layout->h));
+    VK_Assert(vkCreateDescriptorSetLayout(r_vk_ldevice()->h, &create_info, NULL, &set_layout->h));
   }
   // R_VK_DescriptorSetKind_SBO_Geo3D_Tiles
   {
@@ -4492,7 +4673,7 @@ r_init(OS_Handle window, B32 debug)
     create_info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     create_info.bindingCount = 1;
     create_info.pBindings    = bindings;
-    VK_Assert(vkCreateDescriptorSetLayout(r_vk_state->logical_device.h, &create_info, NULL, &set_layout->h));
+    VK_Assert(vkCreateDescriptorSetLayout(r_vk_ldevice()->h, &create_info, NULL, &set_layout->h));
   }
   // R_VK_DescriptorSetKind_SBO_Geo3D_Lights
   {
@@ -4511,7 +4692,7 @@ r_init(OS_Handle window, B32 debug)
     create_info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     create_info.bindingCount = 1;
     create_info.pBindings    = bindings;
-    VK_Assert(vkCreateDescriptorSetLayout(r_vk_state->logical_device.h, &create_info, NULL, &set_layout->h));
+    VK_Assert(vkCreateDescriptorSetLayout(r_vk_ldevice()->h, &create_info, NULL, &set_layout->h));
   }
   // R_VK_DescriptorSetKind_SBO_Geo3D_LightIndices
   {
@@ -4530,7 +4711,7 @@ r_init(OS_Handle window, B32 debug)
     create_info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     create_info.bindingCount = 1;
     create_info.pBindings    = bindings;
-    VK_Assert(vkCreateDescriptorSetLayout(r_vk_state->logical_device.h, &create_info, NULL, &set_layout->h));
+    VK_Assert(vkCreateDescriptorSetLayout(r_vk_ldevice()->h, &create_info, NULL, &set_layout->h));
   }
   // R_VK_DescriptorSetKind_SBO_Geo3D_TileLights
   {
@@ -4549,7 +4730,7 @@ r_init(OS_Handle window, B32 debug)
     create_info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     create_info.bindingCount = 1;
     create_info.pBindings    = bindings;
-    VK_Assert(vkCreateDescriptorSetLayout(r_vk_state->logical_device.h, &create_info, NULL, &set_layout->h));
+    VK_Assert(vkCreateDescriptorSetLayout(r_vk_ldevice()->h, &create_info, NULL, &set_layout->h));
   }
 
   // init stage state
@@ -4606,7 +4787,7 @@ r_window_equip(OS_Handle os_wnd)
     // 2. VK_COMMAND_BUFFER_LEVEL_SECONDARY: cannot be submitted directly, but can be called from primary command buffers, useful to reuse common operations
     alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     alloc_info.commandBufferCount = R_VK_MAX_FRAMES_IN_FLIGHT;
-    VK_Assert(vkAllocateCommandBuffers(r_vk_state->logical_device.h, &alloc_info, command_buffers));
+    VK_Assert(vkAllocateCommandBuffers(r_vk_ldevice()->h, &alloc_info, command_buffers));
 
     for(U64 i = 0; i < R_VK_MAX_FRAMES_IN_FLIGHT; i++)
     {
@@ -4617,7 +4798,7 @@ r_window_equip(OS_Handle os_wnd)
       // One semaphore to signal that an image has been acquired from the swapchain and is ready for rendering
       // Another one to signal that rendering has finished and presentation can happen
       // One fence to make sure only one frame is rendering at a time
-      ret->frames[i].img_acq_sem = r_vk_semaphore(r_vk_state->logical_device.h);
+      ret->frames[i].img_acq_sem = r_vk_semaphore(r_vk_ldevice()->h);
       ret->frames[i].inflt_fence = r_vk_fence();
 
       // Create all uniform buffers
@@ -4655,6 +4836,7 @@ r_window_equip(OS_Handle os_wnd)
 
       ////////////////////////////////
       //~ Create instance buffers for rect and geo3d
+      // FIXME: this is a mess, we should just create a BufferArray type, then use it for ubo,sbo,instance,index buffer, also we don't actually need to pre-allocated these buffer, just use frame batch
 
       // TODO(k): just remember to free this
       // create inst buffer for rect
@@ -4665,24 +4847,19 @@ r_window_equip(OS_Handle os_wnd)
         create_info.size = sizeof(R_Rect2DInst)*R_MAX_RECT_INSTANCES;
         create_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
         create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        VK_Assert(vkCreateBuffer(r_vk_state->logical_device.h, &create_info, NULL, &buffer->h));
+        VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &create_info, NULL, &buffer->h));
 
         VkMemoryRequirements mem_requirements;
-        vkGetBufferMemoryRequirements(r_vk_state->logical_device.h, buffer->h, &mem_requirements);
+        vkGetBufferMemoryRequirements(r_vk_ldevice()->h, buffer->h, &mem_requirements);
 
         buffer->kind = R_ResourceKind_Static;
         buffer->size = mem_requirements.size;
-        buffer->cap  = mem_requirements.size;
 
-        VkMemoryAllocateInfo alloc_info = {0};
-        VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_info.allocationSize = mem_requirements.size;
-        alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
-
-        VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &buffer->memory));
-        VK_Assert(vkBindBufferMemory(r_vk_state->logical_device.h, buffer->h, buffer->memory, 0));
-        VK_Assert(vkMapMemory(r_vk_state->logical_device.h, buffer->memory, 0, buffer->size, 0, &buffer->mapped));
+        VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, property_flags, 0);
+        VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, buffer->h, memory->h, memory->offset));
+        r_vk_memory_map(memory);
+        buffer->memory = memory;
       }
 
       // TODO(k): just remember to free this
@@ -4693,24 +4870,19 @@ r_window_equip(OS_Handle os_wnd)
         create_info.size = sizeof(R_Mesh2DInst)*R_MAX_MESH2D_INSTANCES;
         create_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
         create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        VK_Assert(vkCreateBuffer(r_vk_state->logical_device.h, &create_info, NULL, &buffer->h));
+        VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &create_info, NULL, &buffer->h));
 
         VkMemoryRequirements mem_requirements;
-        vkGetBufferMemoryRequirements(r_vk_state->logical_device.h, buffer->h, &mem_requirements);
+        vkGetBufferMemoryRequirements(r_vk_ldevice()->h, buffer->h, &mem_requirements);
 
         buffer->kind = R_ResourceKind_Static;
         buffer->size = mem_requirements.size;
-        buffer->cap  = mem_requirements.size;
 
-        VkMemoryAllocateInfo alloc_info = {0};
-        VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_info.allocationSize = mem_requirements.size;
-        alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
-
-        VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &buffer->memory));
-        VK_Assert(vkBindBufferMemory(r_vk_state->logical_device.h, buffer->h, buffer->memory, 0));
-        VK_Assert(vkMapMemory(r_vk_state->logical_device.h, buffer->memory, 0, buffer->size, 0, &buffer->mapped));
+        VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, property_flags, 0);
+        VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, buffer->h, memory->h, memory->offset));
+        r_vk_memory_map(memory);
+        buffer->memory = memory;
       }
 
       // TODO(k): just remember to free this
@@ -4722,24 +4894,19 @@ r_window_equip(OS_Handle os_wnd)
         create_info.size = sizeof(R_Mesh3DInst)*R_MAX_MESH3D_INSTANCES;
         create_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
         create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        VK_Assert(vkCreateBuffer(r_vk_state->logical_device.h, &create_info, NULL, &buffer->h));
+        VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &create_info, NULL, &buffer->h));
 
         VkMemoryRequirements mem_requirements;
-        vkGetBufferMemoryRequirements(r_vk_state->logical_device.h, buffer->h, &mem_requirements);
+        vkGetBufferMemoryRequirements(r_vk_ldevice()->h, buffer->h, &mem_requirements);
 
         buffer->kind = R_ResourceKind_Static;
         buffer->size = mem_requirements.size;
-        buffer->cap  = mem_requirements.size;
 
-        VkMemoryAllocateInfo alloc_info = {0};
-        VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_info.allocationSize = mem_requirements.size;
-        alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
-
-        VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &buffer->memory));
-        VK_Assert(vkBindBufferMemory(r_vk_state->logical_device.h, buffer->h, buffer->memory, 0));
-        VK_Assert(vkMapMemory(r_vk_state->logical_device.h, buffer->memory, 0, buffer->size, 0, &buffer->mapped));
+        VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, property_flags, 0);
+        VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, buffer->h, memory->h, memory->offset));
+        r_vk_memory_map(memory);
+        buffer->memory = memory;
       }
     }
   }
@@ -4900,18 +5067,15 @@ r_tex2d_alloc(R_ResourceKind kind, R_Tex2DSampleKind sample_kind, Vec2S32 size, 
     // Sparse images are images where only certain regions are actually backed by memory
     // If you were using a 3D texture for a voxel terrain, for example, then you could use this avoid allocating memory to storage large volumes of "air" values
     create_info.flags = 0;
-    VK_Assert(vkCreateImage(r_vk_state->logical_device.h, &create_info, NULL, &texture->image.h));
+    VK_Assert(vkCreateImage(r_vk_ldevice()->h, &create_info, NULL, &texture->image.h));
 
     VkMemoryRequirements mem_requirements;
-    vkGetImageMemoryRequirements(r_vk_state->logical_device.h, texture->image.h, &mem_requirements);
+    vkGetImageMemoryRequirements(r_vk_ldevice()->h, texture->image.h, &mem_requirements);
 
-    VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-    VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-    alloc_info.allocationSize = mem_requirements.size;
-    alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
-
-    VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &texture->image.memory));
-    VK_Assert(vkBindImageMemory(r_vk_state->logical_device.h, texture->image.h, texture->image.memory, 0));
+    VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_NonLinear, mem_requirements, property_flags, 0);
+    VK_Assert(vkBindImageMemory(r_vk_ldevice()->h, texture->image.h, memory->h, memory->offset));
+    texture->image.memory = memory;
   }
 
   ////////////////////////////////
@@ -4926,7 +5090,7 @@ r_tex2d_alloc(R_ResourceKind kind, R_Tex2DSampleKind sample_kind, Vec2S32 size, 
   ivci.subresourceRange.levelCount     = 1;
   ivci.subresourceRange.baseArrayLayer = 0;
   ivci.subresourceRange.layerCount     = 1;
-  VK_Assert(vkCreateImageView(r_vk_state->logical_device.h, &ivci, NULL, &texture->image.view));
+  VK_Assert(vkCreateImageView(r_vk_ldevice()->h, &ivci, NULL, &texture->image.view));
 
   ////////////////////////////////
   //~ Has initial data? -> copy
@@ -4962,10 +5126,11 @@ r_tex2d_release(R_Handle handle)
   R_VK_Tex2D *tex2d = r_vk_tex2d_from_handle(handle);
 
   // view->image->ds->memory
-  vkDestroyImageView(r_vk_state->logical_device.h, tex2d->image.view, NULL);
-  vkDestroyImage(r_vk_state->logical_device.h, tex2d->image.h, NULL);
+  vkDestroyImageView(r_vk_ldevice()->h, tex2d->image.view, NULL);
+  vkDestroyImage(r_vk_ldevice()->h, tex2d->image.h, NULL);
   r_vk_descriptor_set_destroy(&tex2d->desc_set);
-  vkFreeMemory(r_vk_state->logical_device.h, tex2d->image.memory, NULL);
+  // FIXME: replace with vk_memory_release
+  // vkFreeMemory(r_vk_ldevice()->h, tex2d->image.memory, NULL);
 
   SLLStackPush(r_vk_state->first_free_tex2d, tex2d);
   tex2d->generation++;
@@ -5027,328 +5192,67 @@ r_buffer_alloc(R_ResourceKind kind, U64 size, void *data, U64 data_size)
     ret->generation = gen;
   }
 
-  // Fill basics
   ret->kind = kind;
-  ret->size = data_size;
-  ret->cap = size;
-
-  // It should be noted that in a real world application, you're not supposed to actually call vkAllocateMemory for every individual buffer
-  // The maximum number of simultaneous memory allocations is limited by the maxMemoryAllocationCount physical device limit
-  // which may be as low as 4096 even on high end hardward like an NVIDIA GTX1080
-  // The right way to allocate memory for a large number of objects at the same time is to create a custom allocator that splits
-  //      up a single allocation among many different objects by using the offset parameters that we've seen in many functions
-  // We can either implement such an allocator ourself, or use the VulkanMemoryAllocator library provided by the GPUOpen initiative
+  ret->size = size;
 
   switch(kind)
   {
     case R_ResourceKind_Static:
     {
-      // Create staging buffer
-      VkBuffer staging_buffer;
-      VkDeviceMemory staging_memory;
-      {
-        VkBufferCreateInfo create_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        create_info.size        = size;
-        create_info.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        VK_Assert(vkCreateBuffer(r_vk_state->logical_device.h, &create_info, NULL, &staging_buffer));
+      AssertAlways(data_size != 0);
 
-        VkMemoryRequirements mem_requirements;
-        vkGetBufferMemoryRequirements(r_vk_state->logical_device.h, staging_buffer, &mem_requirements);
-
-        VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-        VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        alloc_info.allocationSize = mem_requirements.size;
-        alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
-
-        VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &staging_memory));
-        VK_Assert(vkBindBufferMemory(r_vk_state->logical_device.h, staging_buffer, staging_memory, 0));
-
-        AssertAlways(data != 0 && data_size > 0);
-        void *mapped;
-        VK_Assert(vkMapMemory(r_vk_state->logical_device.h, staging_memory, 0, mem_requirements.size, 0, &mapped));
-        MemoryCopy(mapped, data, data_size);
-        vkUnmapMemory(r_vk_state->logical_device.h, staging_memory);
-      }
-
+      // Create buffer
       VkBuffer buffer;
-      VkDeviceMemory buffer_memory;
-      // Create buffer <GPU Device Local> 
-      {
-        VkBufferCreateInfo create_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        create_info.size        = size;
-        create_info.usage       = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-        create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        VK_Assert(vkCreateBuffer(r_vk_state->logical_device.h, &create_info, NULL, &buffer));
+      VkBufferCreateInfo create_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+      create_info.size        = size;
+      create_info.usage       = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+      create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &create_info, NULL, &buffer));
 
-        VkMemoryRequirements mem_requirements;
-        vkGetBufferMemoryRequirements(r_vk_state->logical_device.h, buffer, &mem_requirements);
+      VkMemoryRequirements mem_requirements;
+      vkGetBufferMemoryRequirements(r_vk_ldevice()->h, buffer, &mem_requirements);
+      VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+      R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, property_flags, 0);
+      VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, buffer, memory->h, memory->offset));
 
-        VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-        VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-        alloc_info.allocationSize = mem_requirements.size;
-        alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
+      // Create stage buffer
+      R_VK_Buffer *stage_buffer = r_vk_stage_buffer_from_size(data_size);
+      MemoryCopy(stage_buffer->memory->mapped, data, data_size);
 
-        VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &buffer_memory));
-        VK_Assert(vkBindBufferMemory(r_vk_state->logical_device.h, buffer, buffer_memory, 0));
-      }
-
-      // Copy buffer
+      // Copy
+      // FIXME: if we in frame scope, we could use frame command buffer, fallback to oneshot command buffer
       VkCommandBuffer cmd = r_vk_state->oneshot_cmd_buf;
       CmdScope(cmd)
       {
         VkBufferCopy copy_region = {
           .srcOffset = 0, // Optional
           .dstOffset = 0, // Optional
-          .size      = data_size,
+          .size = data_size,
         };
 
         // It is not possible to specify VK_WHOLE_SIZE here unlike the vkMapMemory command
-        vkCmdCopyBuffer(cmd, staging_buffer, buffer, 1, &copy_region);
+        vkCmdCopyBuffer(cmd, stage_buffer->h, buffer, 1, &copy_region);
 
         // TODO(k): we should bind a barrier here
       }
 
       // TODO(k) it's not effecient to use vkQueueWaitIdle, maybe we could add a to_free queue, and use some sync primitive to do this
       // index Semaphore could be a good idea
-      VK_Assert(vkQueueWaitIdle(r_vk_state->logical_device.gfx_queue));
+      VK_Assert(vkQueueWaitIdle(r_vk_ldevice()->gfx_queue));
 
       // Free staging buffer and memory
-      vkDestroyBuffer(r_vk_state->logical_device.h, staging_buffer, NULL);
-      vkFreeMemory(r_vk_state->logical_device.h, staging_memory, NULL);
+      r_vk_buffer_release(stage_buffer);
 
-      // fill result
-      ret->h = buffer; 
-      ret->memory = buffer_memory;
+      ret->h = buffer;
+      ret->memory = memory;
     }break;
     case R_ResourceKind_Dynamic:
     {
-      // double buffer setup (host_visiable/staging+device_local)
-      VkBuffer staging_buffer;
-      VkDeviceMemory staging_memory;
-      void *mapped;
-      {
-        VkBufferCreateInfo create_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        create_info.size        = size;
-        create_info.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        VK_Assert(vkCreateBuffer(r_vk_state->logical_device.h, &create_info, NULL, &staging_buffer));
-
-        VkMemoryRequirements mem_requirements;
-        vkGetBufferMemoryRequirements(r_vk_state->logical_device.h, staging_buffer, &mem_requirements);
-
-        VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-        VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        alloc_info.allocationSize = mem_requirements.size;
-        alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
-
-        VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &staging_memory));
-        VK_Assert(vkBindBufferMemory(r_vk_state->logical_device.h, staging_buffer, staging_memory, 0));
-
-        VK_Assert(vkMapMemory(r_vk_state->logical_device.h, staging_memory, 0, mem_requirements.size, 0, &mapped));
-        if(data != 0 && data_size >0)
-        {
-          MemoryCopy(mapped, data, data_size);
-        }
-      }
-
-      // create buffer
-      VkBuffer buffer;
-      VkDeviceMemory buffer_memory;
-      // Create buffer <GPU Device Local> 
-      {
-        VkBufferCreateInfo create_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        create_info.size        = size;
-        create_info.usage       = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-        create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        VK_Assert(vkCreateBuffer(r_vk_state->logical_device.h, &create_info, NULL, &buffer));
-
-        VkMemoryRequirements mem_requirements;
-        vkGetBufferMemoryRequirements(r_vk_state->logical_device.h, buffer, &mem_requirements);
-
-        VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-        VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-        alloc_info.allocationSize = mem_requirements.size;
-        alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
-
-        VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &buffer_memory));
-        VK_Assert(vkBindBufferMemory(r_vk_state->logical_device.h, buffer, buffer_memory, 0));
-
-        // Copy buffer if data is provided
-        if(data != 0 && data_size > 0)
-        {
-          VkCommandBuffer cmd = r_vk_state->oneshot_cmd_buf;
-          CmdScope(cmd)
-          {
-            VkBufferCopy copy_region = {
-              .srcOffset = 0, // Optional
-              .dstOffset = 0, // Optional
-              .size      = data_size,
-            };
-
-            // It is not possible to specify VK_WHOLE_SIZE here unlike the vkMapMemory command
-            vkCmdCopyBuffer(cmd, staging_buffer, buffer, 1, &copy_region);
-
-            // create a buffer barrier
-            VkBufferMemoryBarrier barrier = 
-            {
-              .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-              // If you are using the barrier to transfer queue family ownership, then these two fields should be the indices of the queue families
-              // They must be set to VK_QUEUE_FAMILY_IGNORED if you don't want to do this (not the default value)
-              .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-              .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-              .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-              .dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT|VK_ACCESS_INDEX_READ_BIT,
-              .buffer = buffer,
-              .offset = 0,
-              .size = data_size,
-            };
-            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0,0, NULL, 1, &barrier, 0, 0);
-          }
-        }
-      }
-
-      // fill result
-      ret->h = buffer; 
-      ret->memory = buffer_memory;
-      ret->staging = staging_buffer;
-      ret->staging_memory = staging_memory;
-      ret->mapped = mapped;
+      NotImplemented;
     }break;
     case R_ResourceKind_Stream:
     {
-      // NOTE(k): don't make too much difference in here after profling double buffer and single host visiable buffer
-#if 1
-      VkBuffer buffer;
-      VkDeviceMemory buffer_memory;
-      void *mapped;
-      {
-        VkBufferCreateInfo create_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        create_info.size        = size;
-        create_info.usage       = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-        create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        VK_Assert(vkCreateBuffer(r_vk_state->logical_device.h, &create_info, NULL, &buffer));
-
-        VkMemoryRequirements mem_requirements;
-        vkGetBufferMemoryRequirements(r_vk_state->logical_device.h, buffer, &mem_requirements);
-
-        VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-        // TODO(k): some device provide 256MB host_visiable and device local memory, find out if we can make use of that conditionally
-        // VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-        VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        alloc_info.allocationSize = mem_requirements.size;
-        alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
-
-        VK_Assert(vkAllocateMemory(r_vk_state->logical_device.h, &alloc_info, NULL, &buffer_memory));
-        VK_Assert(vkBindBufferMemory(r_vk_state->logical_device.h, buffer, buffer_memory, 0));
-        VK_Assert(vkMapMemory(r_vk_state->logical_device.h, buffer_memory, 0, size, 0, &mapped));
-      }
-
-      if(data != 0 && data_size > 0)
-      {
-        MemoryCopy(mapped, data, data_size);
-      }
-
-      // fill result
-      ret->h = buffer;
-      ret->memory = buffer_memory;
-      ret->mapped = mapped;
-#else
-      // double buffer setup (host_visiable/staging+device_local)
-      VkBuffer staging_buffer;
-      VkDeviceMemory staging_memory;
-      void *mapped;
-      {
-        VkBufferCreateInfo create_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        create_info.size        = size;
-        create_info.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        VK_Assert(vkCreateBuffer(r_vk_state->device.h, &create_info, NULL, &staging_buffer));
-
-        VkMemoryRequirements mem_requirements;
-        vkGetBufferMemoryRequirements(r_vk_state->device.h, staging_buffer, &mem_requirements);
-
-        VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-        VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        alloc_info.allocationSize = mem_requirements.size;
-        alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
-
-        VK_Assert(vkAllocateMemory(r_vk_state->device.h, &alloc_info, NULL, &staging_memory));
-        VK_Assert(vkBindBufferMemory(r_vk_state->device.h, staging_buffer, staging_memory, 0));
-
-        VK_Assert(vkMapMemory(r_vk_state->device.h, staging_memory, 0, mem_requirements.size, 0, &mapped));
-        if(data != 0 && data_size >0)
-        {
-          MemoryCopy(mapped, data, size);
-        }
-      }
-
-      // create buffer
-      VkBuffer buffer;
-      VkDeviceMemory buffer_memory;
-      // Create buffer <GPU Device Local> 
-      {
-        VkBufferCreateInfo create_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        create_info.size        = size;
-        create_info.usage       = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-        create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        VK_Assert(vkCreateBuffer(r_vk_state->device.h, &create_info, NULL, &buffer));
-
-        VkMemoryRequirements mem_requirements;
-        vkGetBufferMemoryRequirements(r_vk_state->device.h, buffer, &mem_requirements);
-
-        VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-        VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-        alloc_info.allocationSize = mem_requirements.size;
-        alloc_info.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
-
-        VK_Assert(vkAllocateMemory(r_vk_state->device.h, &alloc_info, NULL, &buffer_memory));
-        VK_Assert(vkBindBufferMemory(r_vk_state->device.h, buffer, buffer_memory, 0));
-
-        // Copy buffer if data is provided
-        if(data != 0 && data_size > 0)
-        {
-          VkCommandBuffer cmd = r_vk_state->oneshot_cmd_buf;
-          CmdScope(cmd)
-          {
-            VkBufferCopy copy_region = {
-              .srcOffset = 0, // Optional
-              .dstOffset = 0, // Optional
-              .size      = data_size,
-            };
-
-            // It is not possible to specify VK_WHOLE_SIZE here unlike the vkMapMemory command
-            vkCmdCopyBuffer(cmd, staging_buffer, buffer, 1, &copy_region);
-
-            // create a buffer barrier
-            VkBufferMemoryBarrier barrier = 
-            {
-              .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-              // If you are using the barrier to transfer queue family ownership, then these two fields should be the indices of the queue families
-              // They must be set to VK_QUEUE_FAMILY_IGNORED if you don't want to do this (not the default value)
-              .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-              .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-              .srcAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT,
-              .dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT,
-              .buffer = buffer,
-              .offset = 0,
-              .size = data_size,
-            };
-            vkCmdPipelineBarrier(cmd,
-                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
-                0,0, NULL, 1, &barrier, 0, 0);
-          }
-        }
-      }
-
-      // fill result
-      ret->h = buffer; 
-      ret->memory = buffer_memory;
-      ret->staging = staging_buffer;
-      ret->stating_memory = staging_memory;
-      ret->mapped = mapped;
-#endif
+      NotImplemented;
     }break;
     default: {InvalidPath;}break;
   }
@@ -5360,6 +5264,8 @@ r_buffer_alloc(R_ResourceKind kind, U64 size, void *data, U64 data_size)
 r_hook void
 r_buffer_copy(R_Handle handle, void *data, U64 size)
 {
+  NotImplemented;
+#if 0
   R_VK_Buffer *buffer = r_vk_buffer_from_handle(handle);
   buffer->size = size;
 
@@ -5369,7 +5275,7 @@ r_buffer_copy(R_Handle handle, void *data, U64 size)
     case R_ResourceKind_Dynamic:
     // case R_ResourceKind_Stream:
     {
-      MemoryCopy(buffer->mapped, data, size);
+      MemoryCopy(buffer->memory->mapped, data, size);
 
       // copy staging buffer to device local buffer
       // NOTE(k): we can't use oneshot_cmd_buf, since we didn't wait for the oneshot cmd buffer, maybe we should use frame cmd buffer
@@ -5407,35 +5313,17 @@ r_buffer_copy(R_Handle handle, void *data, U64 size)
     }break;
     default: {InvalidPath;}break;
   }
+#endif
 }
 
 r_hook void
 r_buffer_release(R_Handle handle)
 {
   R_VK_Buffer *buffer = r_vk_buffer_from_handle(handle);
-
-  vkDestroyBuffer(r_vk_state->logical_device.h, buffer->h, NULL);
-  vkFreeMemory(r_vk_state->logical_device.h, buffer->memory, NULL);
-
-  switch(buffer->kind)
+  if(buffer)
   {
-    case R_ResourceKind_Dynamic:
-    {
-      vkUnmapMemory(r_vk_state->logical_device.h, buffer->memory);
-      vkDestroyBuffer(r_vk_state->logical_device.h, buffer->staging, NULL);
-      vkFreeMemory(r_vk_state->logical_device.h, buffer->staging_memory, NULL);
-    }break;
-    case R_ResourceKind_Static:
-    case R_ResourceKind_Stream:
-    {
-      // noop
-    }break;
-    default:{InvalidPath;}break;
+    r_vk_buffer_release(buffer);
   }
-
-  SLLStackPush(r_vk_state->first_free_buffer, buffer);
-  // NOTE(k): we should increase generation in release instead of alloc
-  buffer->generation++;
 }
 
 //- rjf: frame markers
@@ -5463,13 +5351,13 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
   ProfBeginFunction();
   R_VK_Window *wnd = r_vk_window_from_handle(window_equip);
   R_VK_Frame *frame = &wnd->frames[wnd->curr_frame_idx];
-  R_VK_LogicalDevice *device = &r_vk_state->logical_device;
+  R_VK_LogicalDevice *device = r_vk_ldevice();
 
   // Wait until the previous frame has finished
   // This function takes an array of fences and waits on the host for either any or all of the fences to be signaled before returning
   // The VK_TRUE we pass here indicates that we want to wait for all fences
   // This function also has a timeout parameter that we set to the maxium value of 64 bit unsigned integer, which effectively disables the timeout
-  VK_Assert(vkWaitForFences(r_vk_state->logical_device.h, 1, &frame->inflt_fence, VK_TRUE, UINT64_MAX));
+  VK_Assert(vkWaitForFences(r_vk_ldevice()->h, 1, &frame->inflt_fence, VK_TRUE, UINT64_MAX));
 
   // Vulkan will usually just tell us that the swapchain is no longer adequate during presentation
   // The vkAcquireNextImageKHR and vkQueuePresentKHR functions can return the following special values to indicate this
@@ -5596,9 +5484,10 @@ r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
 
   // NOTE(k): stage_id_cpu buffer could be lagged by several frames
   // get point entity id
-  void *ids = wnd->render_targets->stage_id_cpu.mapped;
+  void *ids = wnd->render_targets->stage_id_cpu.memory->mapped;
   // U64 id = ((U64 *)ids)[(U64)(ptr.y*w+ptr.x)];
   Vec4F32 id = ((Vec4F32 *)ids)[0];
+  // Vec4F32 id = {0};
 
   // increase render_targets ref counter
   frame->render_targets_ref = wnd->render_targets;
@@ -5733,7 +5622,7 @@ r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
   submit_info.pSignalSemaphores    = signal_sems;
   ProfScope("queue submit")
   {
-    VK_Assert(vkQueueSubmit(r_vk_state->logical_device.gfx_queue, 1, &submit_info, frame->inflt_fence));
+    VK_Assert(vkQueueSubmit(r_vk_ldevice()->gfx_queue, 1, &submit_info, frame->inflt_fence));
   }
 
   ////////////////////////////////
@@ -5753,7 +5642,7 @@ r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
   VkResult prest_ret = 0;
   ProfScope("queue present")
   {
-    prest_ret = vkQueuePresentKHR(r_vk_state->logical_device.prest_queue, &prest_info);
+    prest_ret = vkQueuePresentKHR(r_vk_ldevice()->prest_queue, &prest_info);
   }
 
   // NOTE(k): It is important to only check window_resized here to ensure that the job-done semaphores are in a consistent state
@@ -5890,7 +5779,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           U64 inst_buffer_off = inst_idx*sizeof(R_Rect2DInst);
           for(R_BatchNode *batch = batches->first; batch != 0; batch = batch->next)
           {
-            U8 *dst_ptr = (U8*)inst_buffer->mapped + inst_idx*sizeof(R_Rect2DInst);
+            U8 *dst_ptr = (U8*)inst_buffer->memory->mapped + inst_idx*sizeof(R_Rect2DInst);
             MemoryCopy(dst_ptr, batch->v.v, batch->v.byte_count);
             inst_idx += batch->v.byte_count / sizeof(R_Rect2DInst);
           }
@@ -5967,7 +5856,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           uniforms.xform_scale.y = length_2f32(xform_2x2_row1);
 
           U32 uniform_buffer_offset = ui_group_index * uniform_buffer->stride;
-          MemoryCopy((U8 *)uniform_buffer->buffer.mapped + uniform_buffer_offset, &uniforms, sizeof(R_VK_UBO_Rect));
+          MemoryCopy((U8 *)uniform_buffer->buffer.memory->mapped + uniform_buffer_offset, &uniforms, sizeof(R_VK_UBO_Rect));
           vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.rect.layout, 0, 1, &uniform_buffer->set.h, 1, &uniform_buffer_offset);
 
           VkRect2D scissor = {0};
@@ -6365,7 +6254,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         // ubo
         R_VK_UBOBuffer *ubo_buffer = &frame->ubo_buffers[R_VK_UBOTypeKind_Geo2D];
         U32 ubo_buffer_offset = geo2d_pass_index * ubo_buffer->stride;
-        U8 *ubo_dst = (U8*)ubo_buffer->buffer.mapped + ubo_buffer_offset;
+        U8 *ubo_dst = (U8*)ubo_buffer->buffer.memory->mapped + ubo_buffer_offset;
 
         // upload ubo buffer to gpu
         R_VK_UBO_Geo2D ubo = {0};
@@ -6471,7 +6360,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           for(R_BatchNode *batch = batches->first; batch != 0; batch = batch->next)
           {
             U64 batch_inst_count = batch->v.byte_count / sizeof(R_Mesh2DInst);
-            U8 *dst_ptr = (U8*)inst_buffer->mapped+inst_idx*sizeof(R_Mesh2DInst);
+            U8 *dst_ptr = (U8*)inst_buffer->memory->mapped+inst_idx*sizeof(R_Mesh2DInst);
             MemoryCopy(dst_ptr, batch->v.v, batch->v.byte_count);
             inst_idx += batch_inst_count;
           }
@@ -6587,22 +6476,22 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         // NOTE(k): Geo3d uniform is per Geo3D pass unlike rect pass which is per group
         R_VK_UBOBuffer *geo3d_ubo_buffer = &frame->ubo_buffers[R_VK_UBOTypeKind_Geo3D];
         U32 geo3d_ubo_buffer_off = geo3d_pass_index * geo3d_ubo_buffer->stride;
-        U8 *geo3d_ubo_dst = (U8*)geo3d_ubo_buffer->buffer.mapped + geo3d_ubo_buffer_off;
+        U8 *geo3d_ubo_dst = (U8*)geo3d_ubo_buffer->buffer.memory->mapped + geo3d_ubo_buffer_off;
 
         // tile frustum ubo
         R_VK_UBOBuffer *tile_frustum_ubo_buffer = &frame->ubo_buffers[R_VK_UBOTypeKind_Geo3D_TileFrustum];
         U32 tile_frustum_ubo_buffer_off = geo3d_pass_index * tile_frustum_ubo_buffer->stride;
-        U8 *tile_frustum_ubo_dst = (U8*)tile_frustum_ubo_buffer->buffer.mapped + tile_frustum_ubo_buffer_off;
+        U8 *tile_frustum_ubo_dst = (U8*)tile_frustum_ubo_buffer->buffer.memory->mapped + tile_frustum_ubo_buffer_off;
 
         // light culling ubo
         R_VK_UBOBuffer *light_culling_ubo_buffer = &frame->ubo_buffers[R_VK_UBOTypeKind_Geo3D_LightCulling];
         U32 light_culling_ubo_buffer_off = geo3d_pass_index * light_culling_ubo_buffer->stride;
-        U8 *light_culling_ubo_dst = (U8*)light_culling_ubo_buffer->buffer.mapped + light_culling_ubo_buffer_off;
+        U8 *light_culling_ubo_dst = (U8*)light_culling_ubo_buffer->buffer.memory->mapped + light_culling_ubo_buffer_off;
 
         // lights sbo
         R_VK_SBOBuffer *lights_sbo_buffer = &frame->sbo_buffers[R_VK_SBOTypeKind_Geo3D_Lights];
         U32 lights_sbo_buffer_off = geo3d_pass_index*lights_sbo_buffer->stride;
-        U8 *lights_sbo_dst = (U8*)lights_sbo_buffer->buffer.mapped + lights_sbo_buffer_off;
+        U8 *lights_sbo_dst = (U8*)lights_sbo_buffer->buffer.memory->mapped + lights_sbo_buffer_off;
 
         // tiles sbo (device local)
         R_VK_SBOBuffer *tiles_sbo_buffer = &frame->sbo_buffers[R_VK_SBOTypeKind_Geo3D_Tiles];
@@ -6619,12 +6508,12 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         // joints sbo
         R_VK_SBOBuffer *joints_sbo_buffer = &frame->sbo_buffers[R_VK_SBOTypeKind_Geo3D_Joints];
         U32 joints_sbo_buffer_off = geo3d_pass_index*R_MAX_JOINTS_PER_PASS * sizeof(R_VK_SBO_Geo3D_Joint);
-        U8 *joints_sbo_dst = (U8*)(joints_sbo_buffer->buffer.mapped) + joints_sbo_buffer_off;
+        U8 *joints_sbo_dst = (U8*)(joints_sbo_buffer->buffer.memory->mapped) + joints_sbo_buffer_off;
 
         // materials sbo
         R_VK_SBOBuffer *materials_sbo_buffer = &frame->sbo_buffers[R_VK_SBOTypeKind_Geo3D_Materials];
         U32 materials_sbo_buffer_off = geo3d_pass_index*R_MAX_MATERIALS_PER_PASS * sizeof(R_VK_SBO_Geo3D_Material); 
-        U8 *materials_sbo_dst = (U8*)(materials_sbo_buffer->buffer.mapped) + materials_sbo_buffer_off;
+        U8 *materials_sbo_dst = (U8*)(materials_sbo_buffer->buffer.memory->mapped) + materials_sbo_buffer_off;
 
         /////////////////////////////////////////////////////////////////////////////////
         // upload geo3d ubo buffer
@@ -6705,7 +6594,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
             {
               // Copy instance skinning data to sbo joints buffer
               U64 batch_inst_count = batch->v.byte_count / sizeof(R_Mesh3DInst);
-              U8 *dst_ptr = (U8*)inst_buffer->mapped + inst_idx*sizeof(R_Mesh3DInst);
+              U8 *dst_ptr = (U8*)inst_buffer->memory->mapped + inst_idx*sizeof(R_Mesh3DInst);
               for(U64 i = 0; i < batch_inst_count; i++)
               {
                 R_Mesh3DInst *inst = ((R_Mesh3DInst *)batch->v.v)+i;
