@@ -253,7 +253,7 @@ r_vk_stage_init()
     vkGetBufferMemoryRequirements(device, buffer, &mem_requirements);
 
     VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-    VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     mai.allocationSize = mem_requirements.size;
     mai.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
 
@@ -1001,19 +1001,11 @@ r_vk_ubo_buffer_alloc(R_VK_UBOTypeKind kind, U64 unit_count)
   ubo_buffer.buffer.size = buf_size;
 
   VkBufferCreateInfo buf_ci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-  // Specifies the size of the buffer in bytes
   buf_ci.size = buf_size;
-  // The usage field indicats for which purpose the data in the buffer is going to be used
-  // It is possible to specify multiple purposes using a bitwise or
-  // Our use case will be a vertex buffer
-  // .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
   buf_ci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-  // Just like the images in the swapchain, buffers can also be owned by a specific queue family or be shared between multiple at the same time
-  // Our buffer will only be used from the graphics queue, so we an stick to exclusive access
-  // .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
   buf_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   // The flags parameter is used to configure sparse buffer memory
-  // Sparse bfufers in VUlkan refer to a memory management technique that allows more flexible and efficient use of GPU memory
+  // Sparse buffers in Vulkan refer to a memory management technique that allows more flexible and efficient use of GPU memory
   // This technique is particularly useful for handling large datasets, such as textures or vertex buffers, that might not fit contiguously in GPU
   // memory or that require efficient streaming of data in and out of GPU memory
   buf_ci.flags = 0;
@@ -1022,8 +1014,9 @@ r_vk_ubo_buffer_alloc(R_VK_UBOTypeKind kind, U64 unit_count)
   VkMemoryRequirements mem_requirements;
   vkGetBufferMemoryRequirements(r_vk_ldevice()->h, ubo_buffer.buffer.h, &mem_requirements);
 
-  VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-  R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, property_flags, 0);
+  VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+  R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
   VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, ubo_buffer.buffer.h, memory->h, memory->offset));
   r_vk_memory_map(memory);
   ubo_buffer.buffer.memory = memory;
@@ -1120,8 +1113,9 @@ r_vk_sbo_buffer_alloc(R_VK_SBOTypeKind kind, U64 unit_count)
   VkMemoryRequirements mem_requirements;
   vkGetBufferMemoryRequirements(r_vk_ldevice()->h, ret.buffer.h, &mem_requirements);
 
-  VkMemoryPropertyFlags property_flags = device_local == 0 ? (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-  R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, property_flags, 0);
+  VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+  R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
   VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, ret.buffer.h, memory->h, memory->offset));
   if(auto_mapped)
   {
@@ -1357,8 +1351,9 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
     // FIXME: we should use VK_MEMORY_PROPERTY_HOST_CACHED_BIT for gpu read back buffer
     // VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     // FIXME: do we need to invalid cache everytime I read from it?
-    VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
-    R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, property_flags, 0);
+    VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+    VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
     VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, stage_id_cpu->h, memory->h, memory->offset));
     r_vk_memory_map(memory);
     stage_id_cpu->memory = memory;
@@ -1925,7 +1920,6 @@ r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind kind, U64 set_count, U64 cap, V
         .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
       };
       VK_Assert(vkCreateDescriptorPool(r_vk_ldevice()->h, &pool_create_info, NULL, &pool->h));
-
     }
     else
     {
@@ -4807,7 +4801,7 @@ r_window_equip(OS_Handle os_wnd)
         U64 unit_count;
         switch(kind)
         {
-          default:                                      {InvalidPath;}break;
+          default:                                  {InvalidPath;}break;
           case R_VK_UBOTypeKind_Rect:               {unit_count = R_MAX_RECT_PASS*R_MAX_RECT_GROUPS;}break;
           case R_VK_UBOTypeKind_Geo2D:              {unit_count = R_MAX_GEO2D_PASS;}break;
           case R_VK_UBOTypeKind_Geo3D:              {unit_count = R_MAX_GEO3D_PASS;}break;
@@ -4823,7 +4817,7 @@ r_window_equip(OS_Handle os_wnd)
         U64 unit_count;
         switch(kind)
         {
-          default:                                      {InvalidPath;}break;
+          default:                                  {InvalidPath;}break;
           case R_VK_SBOTypeKind_Geo3D_Joints:       {unit_count = R_MAX_GEO3D_PASS;}break;
           case R_VK_SBOTypeKind_Geo3D_Materials:    {unit_count = R_MAX_GEO3D_PASS;}break;
           case R_VK_SBOTypeKind_Geo3D_Lights:       {unit_count = R_MAX_GEO3D_PASS;}break;
@@ -4855,8 +4849,9 @@ r_window_equip(OS_Handle os_wnd)
         buffer->kind = R_ResourceKind_Static;
         buffer->size = mem_requirements.size;
 
-        VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, property_flags, 0);
+        VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
         VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, buffer->h, memory->h, memory->offset));
         r_vk_memory_map(memory);
         buffer->memory = memory;
@@ -4878,8 +4873,9 @@ r_window_equip(OS_Handle os_wnd)
         buffer->kind = R_ResourceKind_Static;
         buffer->size = mem_requirements.size;
 
-        VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, property_flags, 0);
+        VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
         VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, buffer->h, memory->h, memory->offset));
         r_vk_memory_map(memory);
         buffer->memory = memory;
@@ -4902,8 +4898,9 @@ r_window_equip(OS_Handle os_wnd)
         buffer->kind = R_ResourceKind_Static;
         buffer->size = mem_requirements.size;
 
-        VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, property_flags, 0);
+        VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
         VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, buffer->h, memory->h, memory->offset));
         r_vk_memory_map(memory);
         buffer->memory = memory;
@@ -5673,11 +5670,6 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
   R_VK_Frame *frame = &wnd->frames[wnd->curr_frame_idx];
   R_VK_RenderTargets *render_targets = wnd->render_targets;
   VkCommandBuffer cmd_buf = frame->cmd_buf;
-
-  // TODO(k): Build command buffers in parallel and evenly across several threads/cores
-  //          to multiple command lists
-  //          Recording commands is a CPU intensive operation and no driver threads come to reuse
-
 
   // TODO(XXX): remove this local_persist
   local_persist B32 first_submit = 1;
