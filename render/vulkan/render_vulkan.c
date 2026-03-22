@@ -1909,14 +1909,11 @@ r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind kind, U64 set_count, U64 cap, V
 
       VkDescriptorPoolCreateInfo pool_create_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .poolSizeCount = 1,
+        .poolSizeCount = set_layout.binding_count,
         .pPoolSizes = pool_sizes,
         // Aside from the maxium number of individual descriptors that are available, we also need to specify the maxium number of descriptor sets that may be allcoated
         .maxSets = pool->cap,
         // The structure has an optional flag similar to command pools that determines if individual descriptor sets can be freed or not
-        // VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT
-        // We're not going to touch the descriptor set after creating it, so we don't nedd this flag 
-        // You can leave flags to 0
         .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
       };
       VK_Assert(vkCreateDescriptorPool(r_vk_ldevice()->h, &pool_create_info, NULL, &pool->h));
@@ -3290,12 +3287,11 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
         set_layouts[6] = r_vk_state->set_layouts[R_VK_DescriptorSetKind_SBO_Geo3D_Materials].h;
 
         push_constant_range_count = 1;
-        push_constant_ranges[0] =
-          (VkPushConstantRange){
-            .offset = 0,
-            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-            .size = sizeof(R_VK_PUSH_Geo3D_Forward),
-          };
+        push_constant_ranges[0] = (VkPushConstantRange){
+          .offset = 0,
+          .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+          .size = sizeof(R_VK_PUSH_Geo3D_Forward),
+        };
       }break;
       // NOTE(k): normal_depth + geo3d_image
       case R_VK_PipelineKind_GFX_Geo3D_Composite:
@@ -5122,12 +5118,10 @@ r_tex2d_release(R_Handle handle)
 {
   R_VK_Tex2D *tex2d = r_vk_tex2d_from_handle(handle);
 
-  // view->image->ds->memory
   vkDestroyImageView(r_vk_ldevice()->h, tex2d->image.view, NULL);
   vkDestroyImage(r_vk_ldevice()->h, tex2d->image.h, NULL);
   r_vk_descriptor_set_destroy(&tex2d->desc_set);
-  // FIXME: replace with vk_memory_release
-  // vkFreeMemory(r_vk_ldevice()->h, tex2d->image.memory, NULL);
+  r_vk_memory_release(tex2d->image.memory);
 
   SLLStackPush(r_vk_state->first_free_tex2d, tex2d);
   tex2d->generation++;
@@ -5671,22 +5665,21 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
   R_VK_RenderTargets *render_targets = wnd->render_targets;
   VkCommandBuffer cmd_buf = frame->cmd_buf;
 
-  // TODO(XXX): remove this local_persist
-  local_persist B32 first_submit = 1;
-  if(BUILD_DEBUG && first_submit)
-  {
-    printf("rt stage_color: %p\n", wnd->render_targets->stage_color_image.h);
-    printf("rt stage_id: %p\n", wnd->render_targets->stage_id_image.h);
-    printf("rt scratch_color: %p\n", wnd->render_targets->scratch_color_image.h);
-    printf("rt edge_image: %p\n", wnd->render_targets->edge_image.h);
-    printf("rt geo2d_color_image: %p\n", wnd->render_targets->geo2d_color_image.h);
+  // local_persist B32 first_submit = 1;
+  // if(BUILD_DEBUG && first_submit)
+  // {
+  //   printf("rt stage_color: %p\n", wnd->render_targets->stage_color_image.h);
+  //   printf("rt stage_id: %p\n", wnd->render_targets->stage_id_image.h);
+  //   printf("rt scratch_color: %p\n", wnd->render_targets->scratch_color_image.h);
+  //   printf("rt edge_image: %p\n", wnd->render_targets->edge_image.h);
+  //   printf("rt geo2d_color_image: %p\n", wnd->render_targets->geo2d_color_image.h);
 
-    printf("rt geo3d_color_image: %p\n", wnd->render_targets->geo3d_color_image.h);
-    printf("rt geo3d_normal_depth_image: %p\n", wnd->render_targets->geo3d_normal_depth_image.h);
-    printf("rt geo3d_depth_image: %p\n", wnd->render_targets->geo3d_depth_image.h);
-    printf("rt geo3d_pre_depth_image: %p\n", wnd->render_targets->geo3d_pre_depth_image.h);
-    first_submit = 0;
-  }
+  //   printf("rt geo3d_color_image: %p\n", wnd->render_targets->geo3d_color_image.h);
+  //   printf("rt geo3d_normal_depth_image: %p\n", wnd->render_targets->geo3d_normal_depth_image.h);
+  //   printf("rt geo3d_depth_image: %p\n", wnd->render_targets->geo3d_depth_image.h);
+  //   printf("rt geo3d_pre_depth_image: %p\n", wnd->render_targets->geo3d_pre_depth_image.h);
+  //   first_submit = 0;
+  // }
 
   U64 ui_group_index = wnd->ui_group_index;
   U64 ui_pass_index = wnd->ui_pass_index;

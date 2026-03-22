@@ -806,12 +806,12 @@ internal void              r_vk_stage_copy_image(void *src, U64 size, R_VK_Image
 //~ Vulkan Resource Allocation
 
 //- swapchain
-internal R_VK_Swapchain      r_vk_swapchain(R_VK_Surface *surface, OS_Handle os_wnd, VkFormat format, VkColorSpaceKHR color_space, R_VK_Swapchain *old);
-internal void                r_vk_format_for_swapchain(VkSurfaceFormatKHR *formats, U64 count, VkFormat *format, VkColorSpaceKHR *color_space);
+internal R_VK_Swapchain        r_vk_swapchain(R_VK_Surface *surface, OS_Handle os_wnd, VkFormat format, VkColorSpaceKHR color_space, R_VK_Swapchain *old);
+internal void                  r_vk_format_for_swapchain(VkSurfaceFormatKHR *formats, U64 count, VkFormat *format, VkColorSpaceKHR *color_space);
 
 //- surface
-internal VkFormat            r_vk_optimal_depth_format_from_pdevice(VkPhysicalDevice pdevice);
-internal void                r_vk_surface_update(R_VK_Surface *surface);
+internal VkFormat              r_vk_optimal_depth_format_from_pdevice(VkPhysicalDevice pdevice);
+internal void                  r_vk_surface_update(R_VK_Surface *surface);
 
 //- memory
 internal R_VK_Memory*          r_vk_memory_alloc(R_VK_MemoryHeapUsage usage, VkMemoryRequirements mem_requirements, VkMemoryPropertyFlagBits preferred_property_flags, VkMemoryPropertyFlagBits fallback_property_flags);
@@ -820,40 +820,40 @@ internal void                  r_vk_memory_map(R_VK_Memory *memory);
 internal VkMemoryPropertyFlags r_vk_property_flags_from_memroy(R_VK_Memory *memory);
 
 //- buffer
-internal R_VK_UBOBuffer      r_vk_ubo_buffer_alloc(R_VK_UBOTypeKind kind, U64 unit_count);
-internal R_VK_SBOBuffer      r_vk_sbo_buffer_alloc(R_VK_SBOTypeKind kind, U64 unit_count);
-internal R_VK_Buffer*        r_vk_stage_buffer_from_size(U64 size);
-internal void                r_vk_buffer_release(R_VK_Buffer *buffer);
+internal R_VK_UBOBuffer        r_vk_ubo_buffer_alloc(R_VK_UBOTypeKind kind, U64 unit_count);
+internal R_VK_SBOBuffer        r_vk_sbo_buffer_alloc(R_VK_SBOTypeKind kind, U64 unit_count);
+internal R_VK_Buffer*          r_vk_stage_buffer_from_size(U64 size);
+internal void                  r_vk_buffer_release(R_VK_Buffer *buffer);
 
 //- render targets
-internal R_VK_RenderTargets* r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTargets *old);
-internal void                r_vk_render_targets_destroy(R_VK_RenderTargets *render_targets);
+internal R_VK_RenderTargets*   r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTargets *old);
+internal void                  r_vk_render_targets_destroy(R_VK_RenderTargets *render_targets);
 
 //- descriptor
-internal void                r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind kind, U64 set_count, U64 cap, VkBuffer *buffers, VkImageView *image_views, VkSampler *sampler, R_VK_DescriptorSet *sets);
-internal void                r_vk_descriptor_set_destroy(R_VK_DescriptorSet *set);
+internal void                  r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind kind, U64 set_count, U64 cap, VkBuffer *buffers, VkImageView *image_views, VkSampler *sampler, R_VK_DescriptorSet *sets);
+internal void                  r_vk_descriptor_set_destroy(R_VK_DescriptorSet *set);
 
 //- sync primitives
-internal VkFence             r_vk_fence();
-internal VkSemaphore         r_vk_semaphore(VkDevice device);
-internal void                r_vk_cleanup_unsafe_semaphore(VkQueue queue, VkSemaphore semaphore);
+internal VkFence               r_vk_fence();
+internal VkSemaphore           r_vk_semaphore(VkDevice device);
+internal void                  r_vk_cleanup_unsafe_semaphore(VkQueue queue, VkSemaphore semaphore);
 
 //- sync helpers
-internal void                r_vk_image_transition(VkCommandBuffer cmd_buf, VkImage image, VkImageLayout old_layout, VkImageLayout new_layout, VkPipelineStageFlags src_stage, VkAccessFlags src_access_flag, VkPipelineStageFlags dst_stage, VkAccessFlags dst_access_flag, VkImageAspectFlags aspect_mask);
+internal void                  r_vk_image_transition(VkCommandBuffer cmd_buf, VkImage image, VkImageLayout old_layout, VkImageLayout new_layout, VkPipelineStageFlags src_stage, VkAccessFlags src_access_flag, VkPipelineStageFlags dst_stage, VkAccessFlags dst_access_flag, VkImageAspectFlags aspect_mask);
 
 //- pipeline
-internal R_VK_Pipeline       r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolygonKind polygon, VkFormat swapchain_format, R_VK_Pipeline *old);
-internal R_VK_Pipeline       r_vk_cmp_pipeline(R_VK_PipelineKind kind);
+internal R_VK_Pipeline         r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolygonKind polygon, VkFormat swapchain_format, R_VK_Pipeline *old);
+internal R_VK_Pipeline         r_vk_cmp_pipeline(R_VK_PipelineKind kind);
 
 //- sampler
-internal VkSampler           r_vk_sampler2d(R_Tex2DSampleKind kind);
+internal VkSampler             r_vk_sampler2d(R_Tex2DSampleKind kind);
 
 //- helpers
-internal S32                 r_vk_memory_index_from_type_filer(U32 type_bits, VkMemoryPropertyFlags properties);
+internal S32                   r_vk_memory_index_from_type_filer(U32 type_bits, VkMemoryPropertyFlags properties);
 
 //- instance buffers
 
-// internal ID3D11Buffer *r_vk_instance_buffer_from_size(U64 size);
+internal R_VK_InstanceBuffer*  r_vk_instance_buffer_from_size(U64 size);
 // internal void r_usage_access_flags_from_resource_kind(R_ResourceKind kind, D3D11_USAGE *out_vulkan_usage, UINT *out_cpu_access_flags);
 
 ////////////////////////////////
