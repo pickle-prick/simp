@@ -5694,7 +5694,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
     {
       case R_PassKind_Rect:
       {
-        ProfBegin("ui_pass");
+        ProfBegin("UI Pass");
         Assert(ui_pass_index < R_MAX_RECT_PASS);
         VkRenderingAttachmentInfo color_attachment_infos[2] = {0};
 
@@ -5745,57 +5745,60 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         viewport.maxDepth = 1.0f;
         vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
 
-        VkRect2D last_scissor = {0};
-        R_VK_Tex2D *last_texture = 0;
-
-        // unpack inst buffer
+        // Unpack inst buffer
         R_VK_Buffer *inst_buffer = &frame->inst_buffer_rect[ui_pass_index];
 
-        // Draw each group
-        // Rects in the same group share the globals
-        U64 inst_idx = 0;
-        for(R_BatchGroupRectNode *group_n = rect_batch_groups->first; group_n != 0; group_n = group_n->next)
+        typedef struct R_VK_RectDrawGroup R_VK_RectDrawGroup;
+        struct R_VK_RectDrawGroup
         {
-          R_BatchList *batches = &group_n->batches;
-          R_BatchGroupRectParams *group_params = &group_n->params;
+          U32 first_instance;
+          U32 instance_count;
+          U32 uniform_buffer_offset;
+          VkRect2D scissor;
+          B32 scissor_dirty;
+          R_VK_Tex2D *texture;
+        };
 
-          // Get & fill instance buffer
-          ProfBegin("Prepare inst buffer");
-          U64 inst_buffer_off = inst_idx*sizeof(R_Rect2DInst);
+        ////////////////////////////////
+        // Flatten all rect batches once so that we can do belows
+        // 1. Linearly writes mapped memory 
+        // 2. Get instance count so that we know exactly how large instance/ubo buffer needs to be
+        // 3. Distrubute command recording to worker threads
+
+        R_VK_RectDrawGroup *draw_groups = 0;
+        if(rect_batch_groups->count > 0)
+        {
+          draw_groups = push_array_no_zero(r_vk_state->frame_arena, R_VK_RectDrawGroup, rect_batch_groups->count);
+        }
+
+        U64 inst_idx = 0;
+        U64 draw_group_count = 0;
+        ProfScope("Collect RectPass DrawGroup") for(R_BatchGroupRectNode *group_node = rect_batch_groups->first; group_node != 0; group_node = group_node->next)
+        {
+          R_VK_RectDrawGroup *draw_group = &draw_groups[draw_group_count];
+          R_BatchList *batches = &group_node->batches;
+          R_BatchGroupRectParams *group_params = &group_node->params;
+          U64 first_instance = inst_idx;
+          R_VK_RectDrawGroup *prev_draw_group = draw_group_count > 0 ? &draw_groups[draw_group_count-1] : 0;
+
+          ////////////////////////////////
+          //~ Fill instance buffer
+
           for(R_BatchNode *batch = batches->first; batch != 0; batch = batch->next)
           {
+            U64 batch_inst_count = batch->v.byte_count/sizeof(R_Rect2DInst);
+
+            // FIXME: this is what we want to test, individual write for coherent memory could cause unecessary cpu cycles
             U8 *dst_ptr = (U8*)inst_buffer->memory->mapped + inst_idx*sizeof(R_Rect2DInst);
             MemoryCopy(dst_ptr, batch->v.v, batch->v.byte_count);
-            inst_idx += batch->v.byte_count / sizeof(R_Rect2DInst);
+            inst_idx += batch_inst_count;
           }
+          U64 instance_count = batches->byte_count/batches->bytes_per_inst; // FIXME: bytes_per_inst should be equal to sizeof(R_Rect2DInst), in that case why we need both?
 
-          if(inst_idx > R_MAX_RECT_INSTANCES)
-          {
-            Temp scratch = scratch_begin(0, 0);
-            String8 message = push_str8f(scratch.arena, "Too many rects for one frame, %I64u > %i", inst_idx, R_MAX_RECT_INSTANCES);
-            os_graphical_message(1, str8_lit("Fatal Error"), message);
-            os_abort(1);
-            scratch_end(scratch);
-          }
+          ////////////////////////////////
+          //~ Prepare texture
 
-          // Bind instance buffer
-          vkCmdBindVertexBuffers(cmd_buf, 0, 1, &inst_buffer->h, &(VkDeviceSize){inst_buffer_off});
-          ProfEnd();
-
-          // Get texture
-          ProfBegin("Prepare Texture");
-          R_Handle tex_handle = group_params->tex;
-          if(r_handle_match(tex_handle, r_handle_zero()))
-          {
-            tex_handle = r_vk_state->backup_texture;
-          }
-          R_VK_Tex2D *texture = r_vk_tex2d_from_handle(tex_handle);
-          if(texture != last_texture)
-          {
-            vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.rect.layout, 1, 1, &texture->desc_set.h, 0, NULL);
-            last_texture = texture;
-          }
-          ProfEnd();
+          R_VK_Tex2D *texture = r_vk_tex2d_from_handle(group_params->tex);
 
           // Set up texture sample map matrix based on texture format
           // Vulkan use col-major
@@ -5806,45 +5809,30 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
             {0, 0, 0, 1},
           };
 
-          switch(texture->format)
+          if(texture)
           {
-            default: break;
-            case R_Tex2DFormat_R8: 
+            switch(texture->format)
             {
-              MemoryZeroStruct(&texture_sample_channel_map);
-              // TODO(k): why, shouldn't vulkan use col-major order?
-              texture_sample_channel_map[0] = v4f32(1, 1, 1, 1);
-              // texture_sample_channel_map[0].x = 1;
-              // texture_sample_channel_map[1].x = 1;
-              // texture_sample_channel_map[2].x = 1;
-              // texture_sample_channel_map[3].x = 1;
-            }break;
+              default: break;
+              case R_Tex2DFormat_R8: 
+              {
+                MemoryZeroStruct(&texture_sample_channel_map);
+                // TODO(k): why, shouldn't vulkan use col-major order?
+                texture_sample_channel_map[0] = v4f32(1, 1, 1, 1);
+                // texture_sample_channel_map[0].x = 1;
+                // texture_sample_channel_map[1].x = 1;
+                // texture_sample_channel_map[2].x = 1;
+                // texture_sample_channel_map[3].x = 1;
+              }break;
+            }
           }
 
-          //////////////////////////////// 
-          //~ Bind uniform buffer
+          ////////////////////////////////
+          //~ Scissor
 
-          // Upload uniforms
-          R_VK_UBO_Rect uniforms = {0};
-          uniforms.viewport_size = group_params->viewport;
-          uniforms.opacity = 1-group_params->transparency;
-          MemoryCopyArray(uniforms.texture_sample_channel_map, &texture_sample_channel_map);
-          // TODO(k): don't know if we need it or not
-          uniforms.translate;
-          uniforms.texture_t2d_size = v2f32(texture->image.extent.width, texture->image.extent.height);
-          uniforms.xform[0] = v4f32(group_params->xform.v[0][0], group_params->xform.v[1][0], group_params->xform.v[2][0], 0);
-          uniforms.xform[1] = v4f32(group_params->xform.v[0][1], group_params->xform.v[1][1], group_params->xform.v[2][1], 0);
-          uniforms.xform[2] = v4f32(group_params->xform.v[0][2], group_params->xform.v[1][2], group_params->xform.v[2][2], 0);
-          Vec2F32 xform_2x2_row0 = v2f32(uniforms.xform[0].x, uniforms.xform[0].y);
-          Vec2F32 xform_2x2_row1 = v2f32(uniforms.xform[1].x, uniforms.xform[1].y);
-          uniforms.xform_scale.x = length_2f32(xform_2x2_row0);
-          uniforms.xform_scale.y = length_2f32(xform_2x2_row1);
-
-          U32 uniform_buffer_offset = ui_group_index * uniform_buffer->stride;
-          ProfScope("Upload ubo") MemoryCopy((U8 *)uniform_buffer->buffer.memory->mapped + uniform_buffer_offset, &uniforms, sizeof(R_VK_UBO_Rect));
-          ProfScope("Bind ubo descriptor") vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.rect.layout, 0, 1, &uniform_buffer->set.h, 1, &uniform_buffer_offset);
-
+          VkRect2D *prev_scissor = prev_draw_group ? &prev_draw_group->scissor : 0;
           VkRect2D scissor = {0};
+          B32 scissor_dirty = 1;
           if(group_params->clip.x0 == 0 && group_params->clip.x1 == 0 && group_params->clip.y0 == 0 && group_params->clip.y1 == 0)
           {
             scissor.offset = (VkOffset2D){0,0};
@@ -5864,17 +5852,85 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
             scissor.extent = (VkExtent2D){(U32)clip_dim.x, (U32)clip_dim.y};
             Assert(!(clip_dim.x == 0 && clip_dim.y == 0));
           }
-          if(!MemoryMatchStruct(&scissor, &last_scissor))
+          if(prev_scissor && MemoryMatchStruct(&scissor, prev_scissor))
           {
-            last_scissor = scissor;
-            vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
+            scissor_dirty = 0;
           }
 
-          U64 inst_count = batches->byte_count / batches->bytes_per_inst;
-          ProfScope("vkCmdDraw") vkCmdDraw(cmd_buf, 4, inst_count, 0, 0);
+          ////////////////////////////////
+          //~ Upload ubo
 
-          ui_group_index++;
+          R_VK_UBO_Rect uniforms = {0};
+          uniforms.viewport_size = group_params->viewport;
+          uniforms.opacity = 1-group_params->transparency;
+          MemoryCopyArray(uniforms.texture_sample_channel_map, &texture_sample_channel_map);
+          uniforms.translate; // TODO(k): don't know if we need it or not
+          if(texture) uniforms.texture_t2d_size = v2f32(texture->image.extent.width, texture->image.extent.height);
+          uniforms.xform[0] = v4f32(group_params->xform.v[0][0], group_params->xform.v[1][0], group_params->xform.v[2][0], 0);
+          uniforms.xform[1] = v4f32(group_params->xform.v[0][1], group_params->xform.v[1][1], group_params->xform.v[2][1], 0);
+          uniforms.xform[2] = v4f32(group_params->xform.v[0][2], group_params->xform.v[1][2], group_params->xform.v[2][2], 0);
+          Vec2F32 xform_2x2_row0 = v2f32(uniforms.xform[0].x, uniforms.xform[0].y);
+          Vec2F32 xform_2x2_row1 = v2f32(uniforms.xform[1].x, uniforms.xform[1].y);
+          uniforms.xform_scale.x = length_2f32(xform_2x2_row0);
+          uniforms.xform_scale.y = length_2f32(xform_2x2_row1);
+
+          // FIXME: this is what we want to test, individual write for coherent memory could cause unecessary cpu cycles
+          U32 uniform_buffer_offset = ui_group_index * uniform_buffer->stride;
+          MemoryCopy((U8 *)uniform_buffer->buffer.memory->mapped + uniform_buffer_offset, &uniforms, sizeof(R_VK_UBO_Rect));
+
+          // Fill and increament counter
+          draw_group->first_instance = first_instance;
+          draw_group->instance_count = instance_count;
+          draw_group->uniform_buffer_offset = uniform_buffer_offset;
+          draw_group->scissor = scissor;
+          draw_group->scissor_dirty = scissor_dirty;
+          draw_group->texture = texture;
+          ++draw_group_count;
+          ++ui_group_index;
         }
+
+        // FIXME: todo
+        // Upload instance buffer for the all groups
+
+        // FIXME: todo
+        // Upload ubo buffer for the all groups
+
+        // Bind instance buffer for the whole group
+        if(draw_group_count > 0)
+        {
+          vkCmdBindVertexBuffers(cmd_buf, 0, 1, &inst_buffer->h, &(VkDeviceSize){0});
+        }
+
+        // First group don't have texture? -> bind a default texture
+        if(draw_group_count > 0 && draw_groups[0].texture == 0)
+        {
+          R_VK_Tex2D *texture = r_vk_tex2d_from_handle(r_vk_state->backup_texture);
+          vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.rect.layout, 1, 1, &texture->desc_set.h, 0, NULL);
+        }
+
+        // Draw each group
+        for(U64 draw_group_idx = 0; draw_group_idx < draw_group_count; ++draw_group_idx)
+        {
+          R_VK_RectDrawGroup *draw_group = &draw_groups[draw_group_idx];
+
+          // Bind uniform buffer
+          vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.rect.layout, 0, 1, &uniform_buffer->set.h, 1, &draw_group->uniform_buffer_offset);
+
+          // Bind texture
+          if(draw_group->texture)
+          {
+            vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.rect.layout, 1, 1, &draw_group->texture->desc_set.h, 0, NULL);
+          }
+
+          // Set scissor if it's dirty
+          if(draw_group->scissor_dirty)
+          {
+            vkCmdSetScissor(cmd_buf, 0, 1, &draw_group->scissor);
+          }
+
+          ProfScope("vkCmdDraw") vkCmdDraw(cmd_buf, 4, draw_group->instance_count, 0, draw_group->first_instance);
+        }
+
         vkCmdEndRendering(cmd_buf);
         ui_pass_index++;
         ProfEnd();
@@ -5916,9 +5972,9 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         // draw
 
         r_vk_image_transition(frame->cmd_buf, render_targets->stage_color_image.h, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
         r_vk_image_transition(frame->cmd_buf, render_targets->scratch_color_image.h, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+                              VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
 
         // TODO(XXX): we are not using params here (clip and rect e.g.)
 
