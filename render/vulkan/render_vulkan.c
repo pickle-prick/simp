@@ -5841,8 +5841,8 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           uniforms.xform_scale.y = length_2f32(xform_2x2_row1);
 
           U32 uniform_buffer_offset = ui_group_index * uniform_buffer->stride;
-          MemoryCopy((U8 *)uniform_buffer->buffer.memory->mapped + uniform_buffer_offset, &uniforms, sizeof(R_VK_UBO_Rect));
-          vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.rect.layout, 0, 1, &uniform_buffer->set.h, 1, &uniform_buffer_offset);
+          ProfScope("Upload ubo") MemoryCopy((U8 *)uniform_buffer->buffer.memory->mapped + uniform_buffer_offset, &uniforms, sizeof(R_VK_UBO_Rect));
+          ProfScope("Bind ubo descriptor") vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.rect.layout, 0, 1, &uniform_buffer->set.h, 1, &uniform_buffer_offset);
 
           VkRect2D scissor = {0};
           if(group_params->clip.x0 == 0 && group_params->clip.x1 == 0 && group_params->clip.y0 == 0 && group_params->clip.y1 == 0)
@@ -5871,7 +5871,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           }
 
           U64 inst_count = batches->byte_count / batches->bytes_per_inst;
-          vkCmdDraw(cmd_buf, 4, inst_count, 0, 0);
+          ProfScope("vkCmdDraw") vkCmdDraw(cmd_buf, 4, inst_count, 0, 0);
 
           ui_group_index++;
         }

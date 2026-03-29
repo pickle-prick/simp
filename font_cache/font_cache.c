@@ -747,7 +747,10 @@ fnt_run_from_string(FNT_Tag tag, F32 size, F32 base_align_px, F32 tab_size_px, F
             {
               atlas = push_array(fnt_state->raster_arena, FNT_Atlas, 1);
               DLLPushBack(fnt_state->first_atlas, fnt_state->last_atlas, atlas);
-              atlas->root_dim = v2s16(1024, 1024);
+              // NOTE(k): if we use a smaller size, text rendering could use too much rect groups, since there is higher chance for glphy being different altas texture
+              // FIXME(k): we could just double the size every time we need a newer altas, just like a darray
+              // atlas->root_dim = v2s16(1024, 1024);
+              atlas->root_dim = v2s16(4096, 4096);
               atlas->root = push_array(fnt_state->raster_arena, FNT_AtlasRegionNode, 1);
               atlas->root->max_free_size[Corner_00] =
                 atlas->root->max_free_size[Corner_01] =
