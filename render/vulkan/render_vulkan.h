@@ -853,7 +853,7 @@ internal S32                   r_vk_memory_index_from_type_filer(U32 type_bits, 
 
 //- instance buffers
 
-internal R_VK_InstanceBuffer*  r_vk_instance_buffer_from_size(U64 size);
+// internal R_VK_InstanceBuffer*  r_vk_instance_buffer_from_size(U64 size);
 // internal void r_usage_access_flags_from_resource_kind(R_ResourceKind kind, D3D11_USAGE *out_vulkan_usage, UINT *out_cpu_access_flags);
 
 ////////////////////////////////
