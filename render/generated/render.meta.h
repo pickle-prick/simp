@@ -58,6 +58,7 @@ R_PassKind_Blur,
 R_PassKind_Noise,
 R_PassKind_Edge,
 R_PassKind_Crt,
+R_PassKind_Bloom,
 R_PassKind_Geo2D,
 R_PassKind_Geo3D,
 R_PassKind_COUNT,
@@ -68,8 +69,8 @@ extern String8 r_tex2d_format_display_string_table[9];
 extern U8 r_tex2d_format_bytes_per_pixel_table[9];
 extern String8 r_resource_kind_display_string_table[3];
 extern String8 r_tex2d_sample_kind_display_string_table[2];
-extern String8 r_pass_kind_display_string_table[7];
-extern U8 r_pass_kind_batch_table[7];
+extern String8 r_pass_kind_display_string_table[8];
+extern U8 r_pass_kind_batch_table[8];
 
 C_LINKAGE_END
 

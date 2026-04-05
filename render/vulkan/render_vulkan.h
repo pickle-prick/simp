@@ -18,6 +18,7 @@
 // of the GPU could be too larger for it to handle, so the CPU would end up
 // waiting a lot, adding frames of latency Generally extra latency isn't desired
 #define R_VK_MAX_FRAMES_IN_FLIGHT 1
+#define R_VK_MAX_VIEWS_PER_IMAGE 6
 #define R_VK_STAGING_IN_FLIGHT_COUNT 2
 // support max 4K with 32x32 sized tile
 #define R_VK_TILE_SIZE 32
@@ -36,13 +37,16 @@ typedef enum R_VK_VShadKind
   R_VK_VShadKind_Noise,
   R_VK_VShadKind_Edge,
   R_VK_VShadKind_Crt,
+  R_VK_VShadKind_BloomUp,
+  R_VK_VShadKind_BloomDown,
   R_VK_VShadKind_Geo2D_Forward,
-  R_VK_VShadKind_Geo2D_Composite,
   R_VK_VShadKind_Geo3D_ZPre,
   R_VK_VShadKind_Geo3D_Debug,
   R_VK_VShadKind_Geo3D_Forward,
-  R_VK_VShadKind_Geo3D_Composite,
-  R_VK_VShadKind_Finalize,
+  R_VK_VShadKind_Geo3D_Composite, // FIXME: we should remove this asap, no need for this
+  R_VK_VShadKind_Composite,
+  R_VK_VShadKind_CompositeAdditive,
+  R_VK_VShadKind_Finalize, // NOTE(k): similar to composite, but force alpha to 1, no alpha blending
   R_VK_VShadKind_COUNT,
 } R_VK_VShadKind;
 
@@ -53,12 +57,15 @@ typedef enum R_VK_FShadKind
   R_VK_FShadKind_Noise,
   R_VK_FShadKind_Edge,
   R_VK_FShadKind_Crt,
+  R_VK_FShadKind_BloomUp,
+  R_VK_FShadKind_BloomDown,
   R_VK_FShadKind_Geo2D_Forward,
-  R_VK_FShadKind_Geo2D_Composite,
   R_VK_FShadKind_Geo3D_ZPre,
   R_VK_FShadKind_Geo3D_Debug,
   R_VK_FShadKind_Geo3D_Forward,
   R_VK_FShadKind_Geo3D_Composite,
+  R_VK_FShadKind_Composite,
+  R_VK_FShadKind_CompositeAdditive,
   R_VK_FShadKind_Finalize,
   R_VK_FShadKind_COUNT,
 } R_VK_FShadKind;
@@ -128,14 +135,18 @@ typedef enum R_VK_PipelineKind
   R_VK_PipelineKind_GFX_Noise,
   R_VK_PipelineKind_GFX_Edge,
   R_VK_PipelineKind_GFX_Crt,
+  R_VK_PipelineKind_GFX_BloomUp,
+  R_VK_PipelineKind_GFX_BloomDown,
   // 2d
   R_VK_PipelineKind_GFX_Geo2D_Forward,
-  R_VK_PipelineKind_GFX_Geo2D_Composite,
   // 3d
   R_VK_PipelineKind_GFX_Geo3D_ZPre,
   R_VK_PipelineKind_GFX_Geo3D_Debug,
   R_VK_PipelineKind_GFX_Geo3D_Forward,
+  // composite
   R_VK_PipelineKind_GFX_Geo3D_Composite,
+  R_VK_PipelineKind_GFX_Composite,
+  R_VK_PipelineKind_GFX_CompositeAdditive,
   R_VK_PipelineKind_GFX_Finalize,
   // compute pipeline
   R_VK_PipelineKind_CMP_Geo3D_TileFrustum,
@@ -276,6 +287,19 @@ struct R_VK_PUSH_Crt
   F32 time;
 };
 
+typedef struct R_VK_PUSH_BloomDown R_VK_PUSH_BloomDown;
+struct R_VK_PUSH_BloomDown
+{
+  Vec2F32 src_texel_size;
+  F32 threshold;
+};
+
+typedef struct R_VK_PUSH_BloomUp R_VK_PUSH_BloomUp;
+struct R_VK_PUSH_BloomUp
+{
+  F32 filter_radius;
+};
+
 // -sbo
 
 #define R_VK_SBO_Geo3D_Joint Mat4x4F32
@@ -295,12 +319,28 @@ struct R_VK_SBO_Geo3D_Tile
 typedef struct R_VK_SBO_Geo3D_TileLights R_VK_SBO_Geo3D_TileLights;
 struct R_VK_SBO_Geo3D_TileLights
 {
-  U32 offset;  
+  U32 offset;
   U32 light_count;
   F32 _padding_0[2];
 };
 
 #define R_VK_SBO_Geo3D_Material R_Geo3D_Material
+
+////////////////////////////////
+//~ Parameter Types
+
+typedef struct R_VK_ImageTransitionParams R_VK_ImageTransitionParams;
+struct R_VK_ImageTransitionParams
+{
+  VkImageLayout src_layout;
+  VkImageLayout dst_layout;
+  VkPipelineStageFlags src_stage;
+  VkPipelineStageFlags dst_stage;
+  VkAccessFlags src_access_flag;
+  VkAccessFlags dst_access_flag;
+  VkImageAspectFlags aspect_mask;
+  U32 mip_level;
+};
 
 ////////////////////////////////
 //~ Vulkan Device Types
@@ -323,7 +363,9 @@ struct R_VK_Image
   VkImage h;
   VkFormat format;
   struct R_VK_Memory *memory;
+  // NOTE(k): Normal image only have one view, but some image has mip level is non-zero, use views in that case
   VkImageView view;
+  VkImageView views[R_VK_MAX_VIEWS_PER_IMAGE];
   VkExtent2D extent;
   // FIXME: didn't use for now, may remove it later
   VkImageLayout gpu_layout;
@@ -550,7 +592,7 @@ struct R_VK_RenderTargets
   R_VK_Swapchain     swapchain;
 
   R_VK_Image         stage_color_image;
-  R_VK_DescriptorSet stage_color_ds;
+  R_VK_DescriptorSet stage_color_dss[6]; // mutiple mip level
   R_VK_Image         stage_id_image;
   R_VK_Buffer        stage_id_cpu;
   // scratch
@@ -619,10 +661,11 @@ struct R_VK_Window
       R_VK_Pipeline noise;
       R_VK_Pipeline edge;
       R_VK_Pipeline crt;
+      R_VK_Pipeline bloom_up;
+      R_VK_Pipeline bloom_down;
       struct
       {
         R_VK_Pipeline forward[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT];
-        R_VK_Pipeline composite;
       } geo2d;
       struct
       {
@@ -633,10 +676,11 @@ struct R_VK_Window
         R_VK_Pipeline forward[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT];
         R_VK_Pipeline composite;
       } geo3d;
+      R_VK_Pipeline composite;
+      R_VK_Pipeline composite_additive;
       R_VK_Pipeline finalize;
     };
-    // TODO(XXX): not sure if we need some paddings here
-    R_VK_Pipeline arr[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT * 4 + 9];
+    R_VK_Pipeline arr[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT * 4 + 12];
   } pipelines;
 
   R_VK_Frame frames[R_VK_MAX_FRAMES_IN_FLIGHT];
@@ -839,7 +883,8 @@ internal VkSemaphore           r_vk_semaphore(VkDevice device);
 internal void                  r_vk_cleanup_unsafe_semaphore(VkQueue queue, VkSemaphore semaphore);
 
 //- sync helpers
-internal void                  r_vk_image_transition(VkCommandBuffer cmd_buf, VkImage image, VkImageLayout old_layout, VkImageLayout new_layout, VkPipelineStageFlags src_stage, VkAccessFlags src_access_flag, VkPipelineStageFlags dst_stage, VkAccessFlags dst_access_flag, VkImageAspectFlags aspect_mask);
+internal void                  r_vk_image_transition_(VkCommandBuffer cmd_buf, VkImage image, R_VK_ImageTransitionParams *params);
+#define r_vk_image_transition(cmd,image, ...) r_vk_image_transition_(cmd, image, &(R_VK_ImageTransitionParams){.aspect_mask = VK_IMAGE_ASPECT_COLOR_BIT, .mip_level = 0, __VA_ARGS__})
 
 //- pipeline
 internal R_VK_Pipeline         r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolygonKind polygon, VkFormat swapchain_format, R_VK_Pipeline *old);
@@ -872,6 +917,15 @@ internal VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeveri
       scratch_end(scratch); \
     } \
   } while (0)
+
+internal String8 r_vk_shader_code_from_name_suffix_(Arena *arena, String8 name, String8 suffix);
+#if BUILD_DEBUG
+#define r_vk_shader_code_from_name_suffix(arena, name, suffix) r_vk_shader_code_from_name_suffix_(arena, str8_lit(Stringify(name)), str8_lit(Stringify(suffix)))
+#else
+#define SHADER_BYTES_NAME(n,s) n##_##s##_spv
+#define SHADER_LEN_NAME(n,s) n##_##s##_spv_len
+#define r_vk_shader_code_from_name_suffix(arena, name, suffix)  str8(SHADER_BYTES_NAME(name,suffix), SHADER_LEN_NAME(name,suffix))
+#endif
 
 //- command buffer scope
 internal void r_vk_cmd_begin(VkCommandBuffer cmd_buf);

@@ -7,5 +7,5 @@ layout(location = 0) out vec4 out_color;
 layout(set = 0, binding = 0) uniform sampler2D stage_sampler;
 
 void main() {
-        out_color = texture(stage_sampler, in_tex);
+  out_color = texture(stage_sampler, in_tex);
 }

@@ -115,7 +115,7 @@ void main()
   // slight fade blacks / lift shadows
   vec3 lift = vec3(0.02)*out_color.a;
   c = mix(lift, c, vec3(0.98));
-  c = clamp(c, 0.0, 1.0);
+  // c = clamp(c, 0.0, 1.0);
   out_color.rgb = c;
 
   ////////////////////////////////

@@ -344,6 +344,13 @@ struct R_PassParams_Blur
   F32 corner_radii[Corner_COUNT];
 };
 
+typedef struct R_PassParams_Bloom R_PassParams_Bloom;
+struct R_PassParams_Bloom
+{
+  F32 threshold;
+  F32 filter_radius;
+};
+
 typedef struct R_PassParams_Noise R_PassParams_Noise;
 struct R_PassParams_Noise
 {
@@ -406,6 +413,7 @@ struct R_Pass
       R_PassParams_Noise *params_noise;
       R_PassParams_Edge *params_edge;
       R_PassParams_Crt *params_crt;
+      R_PassParams_Bloom *params_bloom;
       R_PassParams_Geo2D *params_geo2d;
       R_PassParams_Geo3D *params_geo3d;
     };

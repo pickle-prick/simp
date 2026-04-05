@@ -187,13 +187,16 @@ internal inline R_Rect2DInst* dr_line_keyed(Vec2F32 a, Vec2F32 b, Vec4F32 color,
 internal R_PassParams_Blur *dr_blur(Rng2F32 rect, F32 blur_size, F32 corner_radius);
 
 //- k: noise
-internal R_PassParams_Noise *d_noise(Rng2F32 rect, F32 elapsed_secs);
+internal R_PassParams_Noise *dr_noise(Rng2F32 rect, F32 elapsed_secs);
 
 //- k: edge
-internal R_PassParams_Edge *d_edge(F32 elapsed_secs);
+internal R_PassParams_Edge *dr_edge(F32 elapsed_secs);
 
 //- k: crt
-internal R_PassParams_Crt *d_crt(F32 warp, F32 scan, F32 elapsed_secs);
+internal R_PassParams_Crt *dr_crt(F32 warp, F32 scan, F32 elapsed_secs);
+
+//- k: bloom
+internal R_PassParams_Bloom *dr_bloom(F32 threshold, F32 filter_radius);
 
 //- rjf: 3d rendering pass params
 internal R_PassParams_Geo3D *dr_geo3d_begin(Rng2F32 viewport, Mat4x4F32 view, Mat4x4F32 projection);

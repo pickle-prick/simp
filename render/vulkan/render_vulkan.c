@@ -46,8 +46,7 @@ return old_value;
 ////////////////////////////////
 // Shader includes
 
-// FIXME: don't need to include them if debug build
-
+#if !BUILD_DEBUG
 #include "shader/crt_frag.spv.h"
 #include "shader/crt_vert.spv.h"
 #include "shader/edge_frag.spv.h"
@@ -72,6 +71,7 @@ return old_value;
 #include "shader/noise_vert.spv.h"
 #include "shader/rect_frag.spv.h"
 #include "shader/rect_vert.spv.h"
+#endif
 
 ////////////////////////////////
 //~ Window Functions
@@ -378,10 +378,13 @@ r_vk_stage_end()
     Assert(image->gpu_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     // transfer image layout to shader read
     r_vk_image_transition(cmd, image->h,
-                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                          VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-                          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
-                          VK_IMAGE_ASPECT_COLOR_BIT);
+                          .src_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                          .src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                          .src_access_flag = VK_ACCESS_TRANSFER_WRITE_BIT,
+                          .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                          .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
+                          
     image->gpu_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   }
 
@@ -476,10 +479,12 @@ r_vk_stage_copy_image(void *src, U64 size, R_VK_Image *dst, Vec3S32 offset, Vec3
       // The problem with it, of course, is that it doesn't necessarily offer the best performance for any operation
       // It is required for some special cases, like using an image as both input and output, or for reading an image after it has left the preinitialized layout
       r_vk_image_transition(cmd, dst->h,
-                            dst->gpu_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-                            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-                            VK_IMAGE_ASPECT_COLOR_BIT);
+                            .src_layout = dst->gpu_layout,
+                            .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                            .src_access_flag = 0,
+                            .dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                            .dst_access_flag = VK_ACCESS_TRANSFER_WRITE_BIT);
       dst->gpu_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     }
 
@@ -504,7 +509,9 @@ r_vk_stage_copy_image(void *src, U64 size, R_VK_Image *dst, Vec3S32 offset, Vec3
     vkCmdCopyBufferToImage(cmd, staging_buffer, dst->h, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
   }
 
-  // push image list
+  // NOTE(k): because we could copy many times per frame for a given image (font atlas for example), we move the image transition to the end of frame
+  // FIXME: can we do better?
+  // Push image list
   if(image_first_copy_this_frame) darray_push(r_vk_state->frame_arena, batch->images, dst);
 }
 
@@ -1222,7 +1229,7 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
 
   R_VK_Swapchain *swapchain                 = &ret->swapchain;
   R_VK_Image *stage_color_image             = &ret->stage_color_image;
-  R_VK_DescriptorSet *stage_color_ds        = &ret->stage_color_ds;
+  R_VK_DescriptorSet *stage_color_dss       = ret->stage_color_dss;
   R_VK_Image *stage_id_image                = &ret->stage_id_image;
   R_VK_Buffer *stage_id_cpu                 = &ret->stage_id_cpu;
   R_VK_Image *scratch_color_image           = &ret->scratch_color_image;
@@ -1241,7 +1248,7 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
 
   // Create stage color image and its sampler descriptor set
   {
-    stage_color_image->format         = swapchain->format;
+    stage_color_image->format         = VK_FORMAT_R16G16B16A16_SFLOAT;
     stage_color_image->extent.width   = swapchain->extent.width;
     stage_color_image->extent.height  = swapchain->extent.height;
 
@@ -1250,7 +1257,7 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
     create_info.extent.width      = stage_color_image->extent.width;
     create_info.extent.height     = stage_color_image->extent.height;
     create_info.extent.depth      = 1;
-    create_info.mipLevels         = 1;
+    create_info.mipLevels         = 6;
     create_info.arrayLayers       = 1;
     create_info.format            = stage_color_image->format;
     create_info.tiling            = VK_IMAGE_TILING_OPTIMAL;
@@ -1269,25 +1276,31 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
     VK_Assert(vkBindImageMemory(r_vk_ldevice()->h, stage_color_image->h, memory->h, memory->offset));
     stage_color_image->memory = memory;
 
-    VkImageViewCreateInfo image_view_create_info = {
-      .sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-      .image                           = stage_color_image->h,
-      .viewType                        = VK_IMAGE_VIEW_TYPE_2D,
-      .format                          = stage_color_image->format,
-      .subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-      .subresourceRange.baseMipLevel   = 0,
-      .subresourceRange.levelCount     = 1,
-      .subresourceRange.baseArrayLayer = 0,
-      .subresourceRange.layerCount     = 1,
-    };
-    VK_Assert(vkCreateImageView(r_vk_ldevice()->h, &image_view_create_info, NULL, &stage_color_image->view));
+    // NOTE(k): we need to create view for every mip level, so 6 views
+    Assert(ArrayCount(stage_color_image->views) >= 6);
+    for(U64 i = 0; i < 6; i++)
+    {
+      VkImageViewCreateInfo image_view_create_info = {
+        .sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image                           = stage_color_image->h,
+        .viewType                        = VK_IMAGE_VIEW_TYPE_2D,
+        .format                          = stage_color_image->format,
+        .subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+        .subresourceRange.baseMipLevel   = i, // mip level
+        .subresourceRange.levelCount     = 1,
+        .subresourceRange.baseArrayLayer = 0,
+        .subresourceRange.layerCount     = 1,
+      };
+      VK_Assert(vkCreateImageView(r_vk_ldevice()->h, &image_view_create_info, NULL, &stage_color_image->views[i]));
 
-    // Create staging color sampler descriptor set
-    r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind_Tex2D,
-                              1, 16, NULL, &stage_color_image->view,
-                              &r_vk_state->samplers[R_Tex2DSampleKind_Nearest],
-                              stage_color_ds);
+      // Create staging color sampler descriptor set
+      r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind_Tex2D,
+                                1, 16, NULL, &stage_color_image->views[i],
+                                &r_vk_state->samplers[R_Tex2DSampleKind_Nearest],
+                                &stage_color_dss[i]);
+    }
   }
+  stage_color_image->view = stage_color_image->views[0];
 
   // stage_id color image
   {
@@ -1419,7 +1432,7 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
 
   // geo2d color image and its sampler descriptor set
   {
-    geo2d_color_image->format        = swapchain->format;
+    geo2d_color_image->format        = VK_FORMAT_R16G16B16A16_SFLOAT;
     geo2d_color_image->extent.width  = swapchain->extent.width;
     geo2d_color_image->extent.height = swapchain->extent.height;
 
@@ -1480,7 +1493,7 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
   {
     R_VK_Image *image = scratch_color_image;
     R_VK_DescriptorSet *ds = scratch_color_ds;
-    VkFormat format = swapchain->format;
+    VkFormat format = VK_FORMAT_R16G16B16A16_SFLOAT;
     VkExtent2D extent = swapchain->extent;
 
     VkImageCreateInfo create_info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
@@ -1538,7 +1551,7 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
 
   // geo3d color image and its sampler descriptor set
   {
-    geo3d_color_image->format        = swapchain->format;
+    geo3d_color_image->format        = VK_FORMAT_R16G16B16A16_SFLOAT;
     geo3d_color_image->extent.width  = swapchain->extent.width;
     geo3d_color_image->extent.height = swapchain->extent.height;
 
@@ -1819,9 +1832,15 @@ r_vk_render_targets_destroy(R_VK_RenderTargets *render_targets)
   vkDestroySwapchainKHR(r_vk_ldevice()->h, render_targets->swapchain.h, NULL);
 
   // stage color image
-  vkDestroyImageView(r_vk_ldevice()->h, render_targets->stage_color_image.view, NULL);
+  for(U64 i = 0; i < 6; ++i)
+  {
+    vkDestroyImageView(r_vk_ldevice()->h, render_targets->stage_color_image.views[i], NULL);
+  }
   vkDestroyImage(r_vk_ldevice()->h, render_targets->stage_color_image.h, NULL);
-  r_vk_descriptor_set_destroy(&render_targets->stage_color_ds);
+  for(U64 i = 0; i < 6; ++i)
+  {
+    r_vk_descriptor_set_destroy(&render_targets->stage_color_dss[i]);
+  }
   r_vk_memory_release(render_targets->stage_color_image.memory);
 
   // stage id image
@@ -2251,15 +2270,15 @@ r_vk_cleanup_unsafe_semaphore(VkQueue queue, VkSemaphore semaphore)
  * There is an equivalent buffer memory barrier to do this for buffers
  */
 internal void
-r_vk_image_transition(VkCommandBuffer cmd_buf, VkImage image, VkImageLayout old_layout, VkImageLayout new_layout, VkPipelineStageFlags src_stage, VkAccessFlags src_access_flag, VkPipelineStageFlags dst_stage, VkAccessFlags dst_access_flag, VkImageAspectFlags aspect_mask)
+r_vk_image_transition_(VkCommandBuffer cmd_buf, VkImage image, R_VK_ImageTransitionParams *params)
 {
   ProfBeginFunction();
   VkImageMemoryBarrier barrier =
   {
     .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
     // It is possible to use VK_image_layout_undefined as oldLayout if you don't care about the existing contents of the image
-    .oldLayout = old_layout,
-    .newLayout = new_layout,
+    .oldLayout = params->src_layout,
+    .newLayout = params->dst_layout,
     // If you are using the barrier to transfer queue family ownership, then these two fields should be the indices of the queue families
     // They must be set to VK_QUEUE_FAMILY_IGNORED if you don't want to do this (not the default value)
     .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -2267,8 +2286,8 @@ r_vk_image_transition(VkCommandBuffer cmd_buf, VkImage image, VkImageLayout old_
     // The image and subresourceRange specify the image that is affected and the specific part of the image
     // Our image is not an array and does not have mipmapping levels, so only one level and layer are specified 
     .image                           = image,
-    .subresourceRange.aspectMask     = aspect_mask,
-    .subresourceRange.baseMipLevel   = 0,
+    .subresourceRange.aspectMask     = params->aspect_mask,
+    .subresourceRange.baseMipLevel   = params->mip_level,
     .subresourceRange.levelCount     = 1,
     .subresourceRange.baseArrayLayer = 0,
     .subresourceRange.layerCount     = 1,
@@ -2276,8 +2295,8 @@ r_vk_image_transition(VkCommandBuffer cmd_buf, VkImage image, VkImageLayout old_
     // happen before the barrier, and which operations that involve the resource must wait on the barrier
     // We need to do that despite already using vkQueueWaitIdle to manually synchronize
     // The right values depend on the old and new layout
-    .srcAccessMask = src_access_flag,
-    .dstAccessMask = dst_access_flag,
+    .srcAccessMask = params->src_access_flag,
+    .dstAccessMask = params->dst_access_flag,
   };
 
   // Transfer writes must occur in the pipeline transfer stage
@@ -2304,7 +2323,7 @@ r_vk_image_transition(VkCommandBuffer cmd_buf, VkImage image, VkImageLayout old_
   // The third parameter is either 0 or VK_DEPENDENCY_BY_REGION_BIT
   // The latter turns the barrier into a per-region condition
   // That means that the implementation is allowed to already begin reading from the parts of a resource that were written so far, for example
-  vkCmdPipelineBarrier(cmd_buf, src_stage, dst_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
+  vkCmdPipelineBarrier(cmd_buf, params->src_stage, params->dst_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
   ProfEnd();
 }
 
@@ -2341,15 +2360,20 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
       vshad_mo = r_vk_state->vshad_modules[R_VK_VShadKind_Crt];
       fshad_mo = r_vk_state->fshad_modules[R_VK_FShadKind_Crt];
     }break;
+    case(R_VK_PipelineKind_GFX_BloomUp):
+    {
+      vshad_mo = r_vk_state->vshad_modules[R_VK_VShadKind_BloomUp];
+      fshad_mo = r_vk_state->fshad_modules[R_VK_FShadKind_BloomUp];
+    }break;
+    case(R_VK_PipelineKind_GFX_BloomDown):
+    {
+      vshad_mo = r_vk_state->vshad_modules[R_VK_VShadKind_BloomDown];
+      fshad_mo = r_vk_state->fshad_modules[R_VK_FShadKind_BloomDown];
+    }break;
     case(R_VK_PipelineKind_GFX_Geo2D_Forward):
     {
       vshad_mo = r_vk_state->vshad_modules[R_VK_VShadKind_Geo2D_Forward];
       fshad_mo = r_vk_state->fshad_modules[R_VK_FShadKind_Geo2D_Forward];
-    }break;
-    case(R_VK_PipelineKind_GFX_Geo2D_Composite):
-    {
-      vshad_mo = r_vk_state->vshad_modules[R_VK_VShadKind_Geo2D_Composite];
-      fshad_mo = r_vk_state->fshad_modules[R_VK_FShadKind_Geo2D_Composite];
     }break;
     case(R_VK_PipelineKind_GFX_Geo3D_ZPre):
     {
@@ -2370,6 +2394,16 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
     {
       vshad_mo = r_vk_state->vshad_modules[R_VK_VShadKind_Geo3D_Composite];
       fshad_mo = r_vk_state->fshad_modules[R_VK_FShadKind_Geo3D_Composite];
+    }break;
+    case(R_VK_PipelineKind_GFX_Composite):
+    {
+      vshad_mo = r_vk_state->vshad_modules[R_VK_VShadKind_Composite];
+      fshad_mo = r_vk_state->fshad_modules[R_VK_FShadKind_Composite];
+    }break;
+    case(R_VK_PipelineKind_GFX_CompositeAdditive):
+    {
+      vshad_mo = r_vk_state->vshad_modules[R_VK_VShadKind_Composite];
+      fshad_mo = r_vk_state->fshad_modules[R_VK_FShadKind_Composite];
     }break;
     case(R_VK_PipelineKind_GFX_Finalize):
     {
@@ -2878,8 +2912,11 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
     case R_VK_PipelineKind_GFX_Noise:
     case R_VK_PipelineKind_GFX_Edge:
     case R_VK_PipelineKind_GFX_Crt:
-    case R_VK_PipelineKind_GFX_Geo2D_Composite:
+    case R_VK_PipelineKind_GFX_BloomDown:
+    case R_VK_PipelineKind_GFX_BloomUp:
     case(R_VK_PipelineKind_GFX_Geo3D_Composite):
+    case R_VK_PipelineKind_GFX_Composite:
+    case R_VK_PipelineKind_GFX_CompositeAdditive:
     case(R_VK_PipelineKind_GFX_Finalize):
     {
       vtx_binding_desc_count = 0;
@@ -2984,8 +3021,11 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
     case R_VK_PipelineKind_GFX_Noise:
     case R_VK_PipelineKind_GFX_Edge:
     case R_VK_PipelineKind_GFX_Crt:
-    case R_VK_PipelineKind_GFX_Geo2D_Composite:
+    case R_VK_PipelineKind_GFX_BloomDown:
+    case R_VK_PipelineKind_GFX_BloomUp:
     case R_VK_PipelineKind_GFX_Geo3D_Composite:
+    case R_VK_PipelineKind_GFX_Composite:
+    case R_VK_PipelineKind_GFX_CompositeAdditive:
     case R_VK_PipelineKind_GFX_Finalize:
     {
       // noop
@@ -3044,9 +3084,12 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
     case R_VK_PipelineKind_GFX_Noise:
     case R_VK_PipelineKind_GFX_Edge:
     case R_VK_PipelineKind_GFX_Crt:
+    case R_VK_PipelineKind_GFX_BloomDown:
+    case R_VK_PipelineKind_GFX_BloomUp:
     case R_VK_PipelineKind_GFX_Geo2D_Forward:
-    case R_VK_PipelineKind_GFX_Geo2D_Composite:
     case R_VK_PipelineKind_GFX_Geo3D_Composite:
+    case R_VK_PipelineKind_GFX_Composite:
+    case R_VK_PipelineKind_GFX_CompositeAdditive:
     case R_VK_PipelineKind_GFX_Finalize:
     {
       depth_stencil_state_create_info.depthTestEnable       = VK_FALSE;
@@ -3115,12 +3158,12 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
     {
       .colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
       .blendEnable         = VK_TRUE,
-      .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA, // Optional
-      .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, // Optional
-      .colorBlendOp        = VK_BLEND_OP_ADD, // Optional
-      .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE, // Optional
-      .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO, // Optional
-      .alphaBlendOp        = VK_BLEND_OP_ADD, // Optional
+      .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+      .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+      .colorBlendOp        = VK_BLEND_OP_ADD,
+      .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+      .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+      .alphaBlendOp        = VK_BLEND_OP_ADD,
     },
     {
       .colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
@@ -3153,12 +3196,18 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
     case R_VK_PipelineKind_GFX_Geo2D_Forward:
     case R_VK_PipelineKind_GFX_Geo3D_Debug:
     case R_VK_PipelineKind_GFX_Geo3D_Forward:
+    case R_VK_PipelineKind_GFX_Composite:
     { 
-      // noop
+      // Default blend mode
     }break;
-    case R_VK_PipelineKind_GFX_Geo2D_Composite:
+    case R_VK_PipelineKind_GFX_CompositeAdditive:
     {
-      color_blend_attachment_state[0].blendEnable = VK_FALSE;
+      // FIXME: don't know how to do it yet
+      // .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA, // Optional
+      // .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, // Optional
+      // .colorBlendOp        = VK_BLEND_OP_ADD, // Optional
+      // .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE, // Optional
+      // .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO, // Optional
     }break;
     case R_VK_PipelineKind_GFX_Geo3D_Composite:
     {
@@ -3172,6 +3221,34 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
     case R_VK_PipelineKind_GFX_Noise:
     case R_VK_PipelineKind_GFX_Edge:
     case R_VK_PipelineKind_GFX_Crt:
+    case R_VK_PipelineKind_GFX_BloomDown:
+    {
+      color_blend_attachment_state[0].blendEnable = VK_FALSE;
+    };
+    case R_VK_PipelineKind_GFX_BloomUp:
+    {
+#if 0
+      // Standard Additive Blending
+      color_blend_attachment_state[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+      color_blend_attachment_state[0].blendEnable = VK_TRUE;
+      // Color: Result = (Src * 1) + (Dst * 1)
+      color_blend_attachment_state[0].srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+      color_blend_attachment_state[0].dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+      color_blend_attachment_state[0].colorBlendOp        = VK_BLEND_OP_ADD;
+      // Alpha: Usually you want to keep the destination alpha or sum them
+      color_blend_attachment_state[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+      color_blend_attachment_state[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+      color_blend_attachment_state[0].alphaBlendOp        = VK_BLEND_OP_ADD;
+#else
+      // Alpha-Weighted Additive
+      color_blend_attachment_state[0].srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+      color_blend_attachment_state[0].dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+      color_blend_attachment_state[0].colorBlendOp = VK_BLEND_OP_ADD;
+      color_blend_attachment_state[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+      color_blend_attachment_state[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+      color_blend_attachment_state[0].alphaBlendOp = VK_BLEND_OP_ADD;
+#endif
+    }break;
     case R_VK_PipelineKind_GFX_Geo3D_ZPre: 
     case R_VK_PipelineKind_GFX_Finalize: 
     {
@@ -3214,7 +3291,10 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
     case R_VK_PipelineKind_GFX_Noise:
     case R_VK_PipelineKind_GFX_Edge:
     case R_VK_PipelineKind_GFX_Crt:
-    case R_VK_PipelineKind_GFX_Geo2D_Composite:
+    case R_VK_PipelineKind_GFX_BloomDown:
+    case R_VK_PipelineKind_GFX_BloomUp:
+    case R_VK_PipelineKind_GFX_Composite:
+    case R_VK_PipelineKind_GFX_CompositeAdditive:
     case R_VK_PipelineKind_GFX_Geo3D_Composite:
     case R_VK_PipelineKind_GFX_Finalize:
     {
@@ -3231,7 +3311,9 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
     }break;
   }
 
-  // Pipeline layout
+  ////////////////////////////////
+  //~ Pipeline layout
+
   // You can use *uniform* values in shaders, which are globals similar to dynamic state variables that can be changed at drawing time to alfter the 
   // behavior of your shaders without having to recreate them
   // They are commonly used to pass the transformation matrix to the vertex shader, or to create texture samplers in the fragment shader
@@ -3300,7 +3382,6 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
         set_layouts[0] = r_vk_state->set_layouts[R_VK_DescriptorSetKind_Tex2D].h;
         set_layouts[1] = r_vk_state->set_layouts[R_VK_DescriptorSetKind_Tex2D].h;
       }break;
-      case R_VK_PipelineKind_GFX_Geo2D_Composite:
       case R_VK_PipelineKind_GFX_Noise:
       {
         set_layout_count = 1;
@@ -3338,6 +3419,32 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
           .size = sizeof(R_VK_PUSH_Crt),
         };
       }break;
+      case R_VK_PipelineKind_GFX_BloomUp:
+      {
+        set_layout_count = 1;
+        set_layouts[0] = r_vk_state->set_layouts[R_VK_DescriptorSetKind_Tex2D].h;
+
+        push_constant_range_count = 1;
+        push_constant_ranges[0] = (VkPushConstantRange){
+          .offset = 0,
+          .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+          .size = sizeof(R_VK_PUSH_BloomUp),
+        };
+      }break;
+      case R_VK_PipelineKind_GFX_BloomDown:
+      {
+        set_layout_count = 1;
+        set_layouts[0] = r_vk_state->set_layouts[R_VK_DescriptorSetKind_Tex2D].h;
+
+        push_constant_range_count = 1;
+        push_constant_ranges[0] = (VkPushConstantRange){
+          .offset = 0,
+          .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+          .size = sizeof(R_VK_PUSH_BloomDown),
+        };
+      }break;
+      case R_VK_PipelineKind_GFX_Composite:
+      case R_VK_PipelineKind_GFX_CompositeAdditive:
       case R_VK_PipelineKind_GFX_Finalize:
       {
         set_layout_count = 1;
@@ -3369,40 +3476,46 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
       {
         color_attachment_count = 2;
         color_attachment_formats = push_array(scratch.arena, VkFormat, color_attachment_count);
-        color_attachment_formats[0] = swapchain_format;
+        color_attachment_formats[0] = VK_FORMAT_R16G16B16A16_SFLOAT;
         color_attachment_formats[1] = VK_FORMAT_R32G32B32A32_SFLOAT;
       }break;
       case R_VK_PipelineKind_GFX_Noise:
       {
         color_attachment_count = 1;
         color_attachment_formats = push_array(scratch.arena, VkFormat, color_attachment_count);
-        color_attachment_formats[0] = swapchain_format;
+        color_attachment_formats[0] = VK_FORMAT_R16G16B16A16_SFLOAT;
       }break;
       case R_VK_PipelineKind_GFX_Edge:
       {
         color_attachment_count = 1;
         color_attachment_formats = push_array(scratch.arena, VkFormat, color_attachment_count);
-        color_attachment_formats[0] = swapchain_format;
+        color_attachment_formats[0] = VK_FORMAT_R16G16B16A16_SFLOAT;
       }break;
       case R_VK_PipelineKind_GFX_Crt:
       {
         color_attachment_count = 1;
         color_attachment_formats = push_array(scratch.arena, VkFormat, color_attachment_count);
-        color_attachment_formats[0] = swapchain_format;
+        color_attachment_formats[0] = VK_FORMAT_R16G16B16A16_SFLOAT;
+      }break;
+      case R_VK_PipelineKind_GFX_BloomDown:
+      {
+        color_attachment_count = 1;
+        color_attachment_formats = push_array(scratch.arena, VkFormat, color_attachment_count);
+        color_attachment_formats[0] = VK_FORMAT_R16G16B16A16_SFLOAT;
+      }break;
+      case R_VK_PipelineKind_GFX_BloomUp:
+      {
+        color_attachment_count = 1;
+        color_attachment_formats = push_array(scratch.arena, VkFormat, color_attachment_count);
+        color_attachment_formats[0] = VK_FORMAT_R16G16B16A16_SFLOAT;
       }break;
       case R_VK_PipelineKind_GFX_Geo2D_Forward:
       {
         color_attachment_count = 3;
         color_attachment_formats = push_array(scratch.arena, VkFormat, color_attachment_count);
-        color_attachment_formats[0] = swapchain_format;
+        color_attachment_formats[0] = VK_FORMAT_R16G16B16A16_SFLOAT;
         color_attachment_formats[1] = VK_FORMAT_R32G32B32A32_SFLOAT;
         color_attachment_formats[2] = VK_FORMAT_R32G32B32A32_SFLOAT;
-      }break;
-      case R_VK_PipelineKind_GFX_Geo2D_Composite:
-      {
-        color_attachment_count = 1;
-        color_attachment_formats = push_array(scratch.arena, VkFormat, color_attachment_count);
-        color_attachment_formats[0] = swapchain_format;
       }break;
       case R_VK_PipelineKind_GFX_Geo3D_ZPre:
       {
@@ -3414,18 +3527,16 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
       {
         color_attachment_count = 3;
         color_attachment_formats = push_array(scratch.arena, VkFormat, color_attachment_count);
-        color_attachment_formats[0] = swapchain_format;
+        color_attachment_formats[0] = VK_FORMAT_R16G16B16A16_SFLOAT;
         color_attachment_formats[1] = VK_FORMAT_R32G32B32A32_SFLOAT;
         color_attachment_formats[2] = VK_FORMAT_R32G32B32A32_SFLOAT;
         
         depth_attachment_format = r_vk_pdevice()->depth_image_format;
       }break;
+      // Composite
       case R_VK_PipelineKind_GFX_Geo3D_Composite:
-      {
-        color_attachment_count = 1;
-        color_attachment_formats = push_array(scratch.arena, VkFormat, color_attachment_count);
-        color_attachment_formats[0] = swapchain_format;
-      }break;
+      case R_VK_PipelineKind_GFX_Composite:
+      case R_VK_PipelineKind_GFX_CompositeAdditive:
       case R_VK_PipelineKind_GFX_Finalize:
       {
         color_attachment_count = 1;
@@ -3772,6 +3883,22 @@ debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
   // If the callback returns true, then the call is aborted with the VK_ERROR_VALIDATION_FAILED_EXT error.
   // This is normally only used to test the validation layers themselved, so you should always return VK_FALSE
   return VK_FALSE;
+}
+
+internal String8
+r_vk_shader_code_from_name_suffix_(Arena *arena, String8 name, String8 suffix)
+{
+  Temp scratch = scratch_begin(&arena, 1);
+  String8 source_dir = str8_chop_last_slash(str8_cstring(__FILE__));
+  // Build path: [SourceDir]/../shader/[name]_[suffix].spv
+  String8 path = push_str8f(scratch.arena, "%.*s/shader/%.*s_%.*s.spv", 
+                            str8_varg(source_dir), 
+                            str8_varg(name), 
+                            str8_varg(suffix));
+  String8 ret = os_data_from_file_path(arena, path);
+  Assert(ret.size > 0);
+  scratch_end(scratch);
+  return ret;
 }
 
 //- command buffer scope
@@ -4424,18 +4551,21 @@ r_init(OS_Handle window, B32 debug)
     String8 shad_code;
     switch(kind)
     {
-      case R_VK_VShadKind_Rect:            {shad_code = str8(rect_vert_spv, rect_vert_spv_len);}break;
-      case R_VK_VShadKind_Noise:           {shad_code = str8(noise_vert_spv, noise_vert_spv_len);}break;
-      case R_VK_VShadKind_Edge:            {shad_code = str8(edge_vert_spv, edge_vert_spv_len);}break;
-      case R_VK_VShadKind_Crt:             {shad_code = str8(crt_vert_spv, crt_vert_spv_len);}break;
-      case R_VK_VShadKind_Geo2D_Forward:   {shad_code = str8(geo2d_forward_vert_spv, geo2d_forward_vert_spv_len);}break;
-      case R_VK_VShadKind_Geo2D_Composite: {shad_code = str8(geo2d_composite_vert_spv, geo2d_composite_vert_spv_len);}break;
-      case R_VK_VShadKind_Geo3D_ZPre:      {shad_code = str8(geo3d_zpre_vert_spv, geo3d_zpre_vert_spv_len);}break;
-      case R_VK_VShadKind_Geo3D_Debug:     {shad_code = str8(geo3d_debug_vert_spv, geo3d_debug_vert_spv_len);}break;
-      case R_VK_VShadKind_Geo3D_Forward:   {shad_code = str8(geo3d_forward_vert_spv, geo3d_forward_vert_spv_len);}break;
-      case R_VK_VShadKind_Geo3D_Composite: {shad_code = str8(geo3d_composite_vert_spv, geo3d_composite_vert_spv_len);}break;
-      case R_VK_VShadKind_Finalize:        {shad_code = str8(finalize_vert_spv, finalize_vert_spv_len);}break;
-      default:                             {InvalidPath;}break;
+      case R_VK_VShadKind_Rect:              {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,rect,vert);}break;
+      case R_VK_VShadKind_Noise:             {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,noise,vert);}break;
+      case R_VK_VShadKind_Edge:              {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,edge,vert);}break;
+      case R_VK_VShadKind_Crt:               {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,crt,vert);}break;
+      case R_VK_VShadKind_BloomDown:         {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,bloom_down,vert);}break;
+      case R_VK_VShadKind_BloomUp:           {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,bloom_up,vert);}break;
+      case R_VK_VShadKind_Geo2D_Forward:     {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,geo2d_forward,vert);}break;
+      case R_VK_VShadKind_Geo3D_ZPre:        {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,geo3d_zpre,vert);}break;
+      case R_VK_VShadKind_Geo3D_Debug:       {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,geo3d_debug,vert);}break;
+      case R_VK_VShadKind_Geo3D_Forward:     {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,geo3d_forward,vert);}break;
+      case R_VK_VShadKind_Geo3D_Composite:   {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,geo3d_composite,vert);}break;
+      case R_VK_VShadKind_Composite:         {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,composite,vert);}break;
+      case R_VK_VShadKind_CompositeAdditive: {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,composite,vert);}break;
+      case R_VK_VShadKind_Finalize:          {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,finalize,vert);}break;
+      default:                               {InvalidPath;}break;
     }
 
     VkShaderModuleCreateInfo create_info = {
@@ -4452,18 +4582,21 @@ r_init(OS_Handle window, B32 debug)
     String8 shad_code;
     switch(kind)
     {
-      case R_VK_FShadKind_Rect:            {shad_code = str8(rect_frag_spv, rect_frag_spv_len);}break;
-      case R_VK_FShadKind_Noise:           {shad_code = str8(noise_frag_spv, noise_frag_spv_len);}break;
-      case R_VK_FShadKind_Edge:            {shad_code = str8(edge_frag_spv, edge_frag_spv_len);}break;
-      case R_VK_FShadKind_Crt:             {shad_code = str8(crt_frag_spv, crt_frag_spv_len);}break;
-      case R_VK_FShadKind_Geo2D_Forward:   {shad_code = str8(geo2d_forward_frag_spv, geo2d_forward_frag_spv_len);}break;
-      case R_VK_FShadKind_Geo2D_Composite: {shad_code = str8(geo2d_composite_frag_spv, geo2d_composite_frag_spv_len);}break;
-      case R_VK_FShadKind_Geo3D_ZPre:      {shad_code = str8(geo3d_zpre_frag_spv, geo3d_zpre_frag_spv_len);}break;
-      case R_VK_FShadKind_Geo3D_Debug:     {shad_code = str8(geo3d_debug_frag_spv, geo3d_debug_frag_spv_len);}break;
-      case R_VK_FShadKind_Geo3D_Forward:   {shad_code = str8(geo3d_forward_frag_spv, geo3d_forward_frag_spv_len);}break;
-      case R_VK_FShadKind_Geo3D_Composite: {shad_code = str8(geo3d_composite_frag_spv, geo3d_composite_frag_spv_len);}break;
-      case R_VK_FShadKind_Finalize:        {shad_code = str8(finalize_frag_spv, finalize_frag_spv_len);}break;
-      default:                             {InvalidPath;}break;
+      case R_VK_FShadKind_Rect:              {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,rect,frag);}break;
+      case R_VK_FShadKind_Noise:             {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,noise,frag);}break;
+      case R_VK_FShadKind_Edge:              {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,edge,frag);}break;
+      case R_VK_FShadKind_Crt:               {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,crt, frag);}break;
+      case R_VK_FShadKind_BloomDown:         {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,bloom_down, frag);}break;
+      case R_VK_FShadKind_BloomUp:           {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,bloom_up, frag);}break;
+      case R_VK_FShadKind_Geo2D_Forward:     {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,geo2d_forward,frag);}break;
+      case R_VK_FShadKind_Geo3D_ZPre:        {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,geo3d_zpre,frag);}break;
+      case R_VK_FShadKind_Geo3D_Debug:       {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,geo3d_debug,frag);}break;
+      case R_VK_FShadKind_Geo3D_Forward:     {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,geo3d_forward,frag);}break;
+      case R_VK_FShadKind_Geo3D_Composite:   {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,geo3d_composite,frag);}break;
+      case R_VK_FShadKind_Composite:         {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,composite,frag);}break;
+      case R_VK_FShadKind_CompositeAdditive: {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,composite,frag);}break;
+      case R_VK_FShadKind_Finalize:          {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,finalize,frag);}break;
+      default:                               {InvalidPath;}break;
     }
     VkShaderModuleCreateInfo create_info = {
       .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -4479,8 +4612,8 @@ r_init(OS_Handle window, B32 debug)
     String8 shad_code;
     switch(kind)
     {
-      case R_VK_CShadKind_Geo3D_TileFrustum:  {shad_code = str8(geo3d_tile_frustum_comp_spv, geo3d_tile_frustum_comp_spv_len);}break;
-      case R_VK_CShadKind_Geo3D_LightCulling: {shad_code = str8(geo3d_light_culling_comp_spv, geo3d_light_culling_comp_spv_len);}break;
+      case R_VK_CShadKind_Geo3D_TileFrustum:  {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,geo3d_tile_frustum,comp);}break;
+      case R_VK_CShadKind_Geo3D_LightCulling: {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,geo3d_light_culling,comp);}break;
       default:                                {InvalidPath;}break;
     }
     VkShaderModuleCreateInfo create_info = {
@@ -4922,6 +5055,10 @@ r_window_equip(OS_Handle os_wnd)
     // crt
     ret->pipelines.crt = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Crt, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, render_targets->swapchain.format, 0);
 
+    // bloom
+    ret->pipelines.bloom_down = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_BloomDown, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, render_targets->swapchain.format, 0);
+    ret->pipelines.bloom_up = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_BloomUp, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, render_targets->swapchain.format, 0);
+
     // geo2d
     for(U64 i = 0; i < R_GeoTopologyKind_COUNT; i++)
     {
@@ -4930,7 +5067,8 @@ r_window_equip(OS_Handle os_wnd)
         ret->pipelines.geo2d.forward[i*R_GeoPolygonKind_COUNT + j] = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Geo2D_Forward, i, j, render_targets->swapchain.format, 0);
       }
     }
-    ret->pipelines.geo2d.composite = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Geo2D_Composite, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, render_targets->swapchain.format, 0);
+    ret->pipelines.composite = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Composite, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, render_targets->swapchain.format, 0);
+    ret->pipelines.composite_additive = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_CompositeAdditive, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, render_targets->swapchain.format, 0);
 
     // geo3d
     ret->pipelines.geo3d.tile_frustum = r_vk_cmp_pipeline(R_VK_PipelineKind_CMP_Geo3D_TileFrustum);
@@ -5419,8 +5557,13 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
   // https://github.com/GameTechDev/IntroductionToVulkan/issues/4
   VkImage stage_color_image = wnd->render_targets->stage_color_image.h;
   {
-    r_vk_image_transition(frame->cmd_buf, stage_color_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    r_vk_image_transition(frame->cmd_buf, stage_color_image,
+                          .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
+                          .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                          .src_access_flag = 0,
+                          .dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                          .dst_access_flag = VK_ACCESS_TRANSFER_WRITE_BIT);
     VkClearColorValue clear_clr = {0,0,0,0};
     VkImageSubresourceRange subrange;
     subrange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -5429,17 +5572,24 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
     subrange.baseArrayLayer = 0;
     subrange.layerCount     = 1;
     vkCmdClearColorImage(frame->cmd_buf, stage_color_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_clr, 1, &subrange);
-    r_vk_image_transition(frame->cmd_buf, stage_color_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                              VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    r_vk_image_transition(frame->cmd_buf, stage_color_image,
+                          .src_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                          .src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                          .src_access_flag = VK_ACCESS_TRANSFER_WRITE_BIT,
+                          .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                          .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
   }
   VkImage id_color_image = wnd->render_targets->stage_id_image.h;
   {
     // [id_color_image] undefined -> transfer_dst
     r_vk_image_transition(frame->cmd_buf, id_color_image,
-                              VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                              VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT,
-                              VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-                              VK_IMAGE_ASPECT_COLOR_BIT);
+                          .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
+                          .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          .src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                          .src_access_flag = VK_ACCESS_TRANSFER_READ_BIT,
+                          .dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                          .dst_access_flag = VK_ACCESS_TRANSFER_WRITE_BIT);
     VkClearColorValue clear_clr = {0,0,0,0};
     VkImageSubresourceRange subrange;
     subrange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -5448,8 +5598,13 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
     subrange.baseArrayLayer = 0;
     subrange.layerCount     = 1;
     vkCmdClearColorImage(frame->cmd_buf, id_color_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_clr, 1, &subrange);
-    r_vk_image_transition(frame->cmd_buf, id_color_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                              VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    r_vk_image_transition(frame->cmd_buf, id_color_image,
+                          .src_layout =VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                          .src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                          .src_access_flag = VK_ACCESS_TRANSFER_WRITE_BIT,
+                          .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                          .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
   }
 
   // reset per-frame index
@@ -5552,14 +5707,21 @@ r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
 
     // transition stage color image layout to shader read optimal
     r_vk_image_transition(cmd_buf, wnd->render_targets->stage_color_image.h,
-                              VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+                          .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                          .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                          .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                          .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                          .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                          .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
 
     // [swapchain image] undefined -> color_attachment
-    r_vk_image_transition(frame->cmd_buf, swapchain->images[frame->img_idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                              VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0,
-                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                              VK_IMAGE_ASPECT_COLOR_BIT);
+    r_vk_image_transition(frame->cmd_buf, swapchain->images[frame->img_idx],
+                          .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
+                          .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                          .src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                          .src_access_flag = 0,
+                          .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                          .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 
     // begin
     vkCmdBeginRendering(cmd_buf, &render_info);
@@ -5584,15 +5746,20 @@ r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
     vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
 
     // bind stage color descriptor
-    vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.finalize.layout, 0, 1, &wnd->render_targets->stage_color_ds.h, 0, NULL);
+    vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.finalize.layout, 0, 1, &wnd->render_targets->stage_color_dss[0].h, 0, NULL);
 
     // draw the quad
     vkCmdDraw(cmd_buf, 4, 1, 0, 0);
 
     vkCmdEndRendering(cmd_buf);
   }
-  r_vk_image_transition(frame->cmd_buf, swapchain->images[frame->img_idx], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, VK_IMAGE_ASPECT_COLOR_BIT);
+  r_vk_image_transition(frame->cmd_buf, swapchain->images[frame->img_idx],
+                        .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        .dst_layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                        .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                        .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                        .dst_stage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                        .dst_access_flag = 0);
 
   ////////////////////////////////
   //~ Submit gfx command buffer
@@ -5935,7 +6102,12 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         ui_pass_index++;
         ProfEnd();
       }break;
-      case R_PassKind_Blur: {NotImplemented;}break;
+      case R_PassKind_Blur:
+      {
+        ProfBegin("Blur Pass");
+        R_PassParams_Blur *params = pass->params_blur;
+        ProfEnd();
+      }break;
       case R_PassKind_Noise:
       {
         ProfBegin("noise pass");
@@ -5971,10 +6143,20 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         /////////////////////////////////////////////////////////////////////////////////
         // draw
 
-        r_vk_image_transition(frame->cmd_buf, render_targets->stage_color_image.h, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
-        r_vk_image_transition(frame->cmd_buf, render_targets->scratch_color_image.h, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                              VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        r_vk_image_transition(frame->cmd_buf, render_targets->stage_color_image.h,
+                              .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                              .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
+        r_vk_image_transition(frame->cmd_buf, render_targets->scratch_color_image.h,
+                              .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
+                              .dst_layout =VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                              .src_access_flag = 0,
+                              .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 
         // TODO(XXX): we are not using params here (clip and rect e.g.)
 
@@ -6011,7 +6193,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         vkCmdBeginRendering(cmd_buf, &render_info);
 
         // bind stage color descriptor
-        vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.noise.layout, 0, 1, &render_targets->stage_color_ds.h, 0, NULL);
+        vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.noise.layout, 0, 1, &render_targets->stage_color_dss[0].h, 0, NULL);
 
         vkCmdDraw(cmd_buf, 4, 1, 0, 0);
 
@@ -6020,16 +6202,20 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
         // [scratch_color_image] color attachment -> transfer src
         r_vk_image_transition(cmd_buf, render_targets->scratch_color_image.h,
-                                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT,
-                                  VK_IMAGE_ASPECT_COLOR_BIT);
+                              .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                              .dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                              .dst_access_flag = VK_ACCESS_TRANSFER_READ_BIT);
         // [stage_color_image] shader read -> transfer dst
         r_vk_image_transition(cmd_buf, render_targets->stage_color_image.h,
-                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
-                                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-                                  VK_IMAGE_ASPECT_COLOR_BIT);
+                              .src_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              .src_access_flag = VK_ACCESS_SHADER_READ_BIT,
+                              .dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                              .dst_access_flag = VK_ACCESS_TRANSFER_WRITE_BIT);
 
         // copy scratch image to stage image
         {
@@ -6053,10 +6239,12 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           copy_region.extent = (VkExtent3D){render_targets->scratch_color_image.extent.width, render_targets->scratch_color_image.extent.height, 1};
           vkCmdCopyImage(cmd_buf, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
           r_vk_image_transition(cmd_buf, render_targets->stage_color_image.h,
-                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-                                    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                                    VK_IMAGE_ASPECT_COLOR_BIT);
+                                .src_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                .src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                .src_access_flag = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
         }
         ProfEnd();
       }break;
@@ -6084,12 +6272,27 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         /////////////////////////////////////////////////////////////////////////////////
         // draw
 
-        r_vk_image_transition(frame->cmd_buf, render_targets->stage_color_image.h, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
-        r_vk_image_transition(frame->cmd_buf, render_targets->edge_image.h, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
-        r_vk_image_transition(frame->cmd_buf, render_targets->scratch_color_image.h, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        r_vk_image_transition(frame->cmd_buf, render_targets->stage_color_image.h,
+                              .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                              .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
+        r_vk_image_transition(frame->cmd_buf, render_targets->edge_image.h,
+                              .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                              .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
+        r_vk_image_transition(frame->cmd_buf, render_targets->scratch_color_image.h,
+                              .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
+                              .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                              .src_access_flag = 0,
+                              .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 
         // TODO(XXX): we are not using params here (clip and rect e.g.)
 
@@ -6124,7 +6327,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         vkCmdBeginRendering(cmd_buf, &render_info);
 
         // bind stage color descriptor
-        vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.edge.layout, 0, 1, &render_targets->stage_color_ds.h, 0, NULL);
+        vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.edge.layout, 0, 1, &render_targets->stage_color_dss[0].h, 0, NULL);
         // bind edge color descriptor
         vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.edge.layout, 1, 1, &render_targets->edge_ds.h, 0, NULL);
 
@@ -6133,10 +6336,20 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         // end drawing
         vkCmdEndRendering(cmd_buf);
 
-        r_vk_image_transition(cmd_buf, render_targets->scratch_color_image.h, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
-        r_vk_image_transition(cmd_buf, render_targets->stage_color_image.h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        r_vk_image_transition(cmd_buf, render_targets->scratch_color_image.h,
+                              .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                              .dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                              .dst_access_flag = VK_ACCESS_TRANSFER_READ_BIT);
+        r_vk_image_transition(cmd_buf, render_targets->stage_color_image.h,
+                              .src_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              .src_access_flag = 0,
+                              .dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                              .dst_access_flag = VK_ACCESS_TRANSFER_WRITE_BIT);
 
         // copy scratch image to stage image
         {
@@ -6160,10 +6373,12 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           copy_region.extent = (VkExtent3D){render_targets->scratch_color_image.extent.width, render_targets->scratch_color_image.extent.height, 1};
           vkCmdCopyImage(cmd_buf, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
           r_vk_image_transition(cmd_buf, render_targets->stage_color_image.h,
-                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-                                    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                                    VK_IMAGE_ASPECT_COLOR_BIT);
+                                .src_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                .src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                .src_access_flag = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
         }
         ProfEnd();
       }break;
@@ -6191,10 +6406,20 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         /////////////////////////////////////////////////////////////////////////////////
         // draw
 
-        r_vk_image_transition(frame->cmd_buf, render_targets->stage_color_image.h, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
-        r_vk_image_transition(frame->cmd_buf, render_targets->scratch_color_image.h, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        r_vk_image_transition(frame->cmd_buf, render_targets->stage_color_image.h,
+                              .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                              .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
+        r_vk_image_transition(frame->cmd_buf, render_targets->scratch_color_image.h,
+                              .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
+                              .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                              .src_access_flag = 0,
+                              .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 
         // TODO(XXX): we are not using params here (clip and rect e.g.)
 
@@ -6233,17 +6458,27 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         vkCmdBeginRendering(cmd_buf, &render_info);
 
         // bind stage color descriptor
-        vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.crt.layout, 0, 1, &render_targets->stage_color_ds.h, 0, NULL);
+        vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.crt.layout, 0, 1, &render_targets->stage_color_dss[0].h, 0, NULL);
 
         vkCmdDraw(cmd_buf, 4, 1, 0, 0);
 
         // end drawing
         vkCmdEndRendering(cmd_buf);
 
-        r_vk_image_transition(cmd_buf, render_targets->scratch_color_image.h, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
-        r_vk_image_transition(cmd_buf, render_targets->stage_color_image.h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        r_vk_image_transition(cmd_buf, render_targets->scratch_color_image.h,
+                              .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                              .dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                              .dst_access_flag = VK_ACCESS_TRANSFER_READ_BIT);
+        r_vk_image_transition(cmd_buf, render_targets->stage_color_image.h,
+                              .src_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              .src_access_flag = 0,
+                              .dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                              .dst_access_flag = VK_ACCESS_TRANSFER_WRITE_BIT);
 
         // copy scratch image to stage image
         {
@@ -6267,11 +6502,206 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           copy_region.extent = (VkExtent3D){render_targets->scratch_color_image.extent.width, render_targets->scratch_color_image.extent.height, 1};
           vkCmdCopyImage(cmd_buf, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
           r_vk_image_transition(cmd_buf, render_targets->stage_color_image.h,
-                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-                                    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                                    VK_IMAGE_ASPECT_COLOR_BIT);
+                                .src_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                .src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                .src_access_flag = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
         }
+        ProfEnd();
+      }break;
+      case R_PassKind_Bloom:
+      {
+        ProfBegin("Bloom Pass");
+        R_PassParams_Bloom *params = pass->params_bloom;
+
+        //////////////////////////////// 
+        //~ Unpack Parameters
+
+        R_VK_Pipeline *bloom_down_pipeline = &wnd->pipelines.bloom_down;
+        R_VK_Pipeline *bloom_up_pipeline = &wnd->pipelines.bloom_up;
+
+        R_VK_Image *rt = &render_targets->stage_color_image;
+        uint32_t base_width = rt->extent.width;
+        uint32_t base_height = rt->extent.height;
+
+        //////////////////////////////// 
+        //~ FIXME: Threshold Pass
+
+        //////////////////////////////// 
+        //~ DownSample Loop
+
+        vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, bloom_down_pipeline->h);
+
+        // FIXME: ReadMip[i]: COLOR_ATTACHMENT -> SHADER_READ
+        // FIXME: WriteMip[i]: UNDEFINED -> COLOR_ATTACHMENT
+        VkImageView *mip_views = rt->views;
+        R_VK_DescriptorSet *mip_descriptors = render_targets->stage_color_dss;
+
+        for(U64 i = 0; i < 5; ++i)
+        {
+          //////////////////////////////// 
+          //~ Image transition
+
+          // read 0
+          r_vk_image_transition(cmd_buf, rt->h,
+                                .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                .dst_access_flag = VK_ACCESS_SHADER_READ_BIT,
+                                .mip_level = i);
+
+          // write 1
+          r_vk_image_transition(cmd_buf, rt->h,
+                                .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
+                                .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                .src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                .src_access_flag = 0,
+                                .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                .mip_level = i+1);
+
+          //////////////////////////////// 
+          //~ Calculate mip extent
+
+          U32 mip_w = base_width  >> (i+1);
+          U32 mip_h = base_height >> (i+1);
+          mip_w = ClampBot(1, mip_w);
+          mip_h = ClampBot(1, mip_h);
+
+          //////////////////////////////// 
+          //~ Viewport & Scissor
+
+          VkViewport viewport = {0};
+          viewport.width    = mip_w;
+          viewport.height   = mip_h;
+          viewport.minDepth = 0.0f;
+          viewport.maxDepth = 1.0f;
+          vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
+
+          VkRect2D scissor = {0};
+          scissor.offset = (VkOffset2D){0, 0};
+          scissor.extent = (VkExtent2D){mip_w,mip_h};
+          vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
+
+          ////////////////////////////////
+          //~ Prepare RenderInfo
+
+          VkRenderingAttachmentInfo color_attachment_info = {0};
+          color_attachment_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+          color_attachment_info.imageView = mip_views[i+1];
+          color_attachment_info.imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
+          color_attachment_info.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+          color_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+          VkRenderingInfo render_info = { VK_STRUCTURE_TYPE_RENDERING_INFO };
+          render_info.renderArea = scissor;
+          render_info.layerCount = 1;
+          render_info.colorAttachmentCount = 1;
+          render_info.pColorAttachments = &color_attachment_info;
+
+          ////////////////////////////////
+          //~ Draw
+
+          VkPipelineLayout pipeline_layout = bloom_down_pipeline->layout;
+
+          vkCmdBeginRendering(cmd_buf, &render_info);
+          vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &mip_descriptors[i].h, 0,NULL);
+
+          // Push Constants
+          R_VK_PUSH_BloomDown push = {.src_texel_size = {1.0f / (float)mip_w, 1.0f / (float)mip_h}, .threshold = i == 0 ? params->threshold : 0.0f};
+          vkCmdPushConstants(cmd_buf, pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(R_VK_PUSH_BloomDown), &push);
+
+          vkCmdDraw(cmd_buf,4,1,0,0);
+          vkCmdEndRendering(cmd_buf);
+        }
+
+        //////////////////////////////// 
+        //~ UpSample Loop
+
+        vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, bloom_up_pipeline->h);
+
+        for(S32 i = 4; i >= 0; --i)
+        {
+          //////////////////////////////// 
+          //~ Image transition
+
+          r_vk_image_transition(cmd_buf, rt->h,
+                                .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                .dst_access_flag = VK_ACCESS_SHADER_READ_BIT,
+                                .mip_level = i+1);
+
+          r_vk_image_transition(cmd_buf, rt->h,
+                                .src_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                .src_access_flag = VK_ACCESS_SHADER_READ_BIT,
+                                .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                .mip_level = i);
+
+          //////////////////////////////// 
+          //~ Calculate mip extent
+
+          U32 mip_w = base_width  >> i;
+          U32 mip_h = base_height >> i;
+          mip_w = ClampBot(1, mip_w);
+          mip_h = ClampBot(1, mip_h);
+
+          //////////////////////////////// 
+          //~ Viewport & Scissor
+
+          VkViewport viewport = {0};
+          viewport.width    = mip_w;
+          viewport.height   = mip_h;
+          viewport.minDepth = 0.0f;
+          viewport.maxDepth = 1.0f;
+          vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
+
+          VkRect2D scissor = {0};
+          scissor.offset = (VkOffset2D){0, 0};
+          scissor.extent = (VkExtent2D){mip_w,mip_h};
+          vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
+
+          ////////////////////////////////
+          //~ Prepare RenderInfo
+
+          VkRenderingAttachmentInfo color_attachment_info = {0};
+          color_attachment_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+          color_attachment_info.imageView = mip_views[i];
+          color_attachment_info.imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
+          color_attachment_info.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+          color_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+          VkRenderingInfo render_info = { VK_STRUCTURE_TYPE_RENDERING_INFO };
+          render_info.renderArea = scissor;
+          render_info.layerCount = 1;
+          render_info.colorAttachmentCount = 1;
+          render_info.pColorAttachments = &color_attachment_info;
+
+          ////////////////////////////////
+          //~ Draw
+
+          VkPipelineLayout pipeline_layout = bloom_up_pipeline->layout;
+
+          vkCmdBeginRendering(cmd_buf, &render_info);
+          vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &mip_descriptors[i+1].h, 0,NULL);
+
+          // Push Constants
+          R_VK_PUSH_BloomUp push = {.filter_radius = params->filter_radius};
+          vkCmdPushConstants(cmd_buf, pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(R_VK_PUSH_BloomUp), &push);
+
+          vkCmdDraw(cmd_buf,4,1,0,0);
+          vkCmdEndRendering(cmd_buf);
+        }
+
         ProfEnd();
       }break;
       case R_PassKind_Geo2D:
@@ -6334,10 +6764,20 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         /////////////////////////////////////////////////////////////////////////////////
         // forward pass
 
-        r_vk_image_transition(frame->cmd_buf, render_targets->geo2d_color_image.h, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
-        r_vk_image_transition(frame->cmd_buf, render_targets->edge_image.h, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        r_vk_image_transition(frame->cmd_buf, render_targets->geo2d_color_image.h,
+                              .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
+                              .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              .src_access_flag = VK_ACCESS_SHADER_READ_BIT,
+                              .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+        r_vk_image_transition(frame->cmd_buf, render_targets->edge_image.h,
+                              .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
+                              .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              .src_access_flag = VK_ACCESS_SHADER_READ_BIT,
+                              .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 
         // NOTE(XXX): id image is cleared at the beginning of the frame
         VkClearValue clear_colors[2] = {0};
@@ -6441,8 +6881,13 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         /////////////////////////////////////////////////////////////////////////////////
         // composite to the main staging buffer
 
-        r_vk_image_transition(frame->cmd_buf, render_targets->geo2d_color_image.h, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        r_vk_image_transition(frame->cmd_buf, render_targets->geo2d_color_image.h,
+                              .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                              .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
 
         {
           VkRenderingAttachmentInfo color_attachment_info = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
@@ -6463,7 +6908,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           // begin drawing
           vkCmdBeginRendering(cmd_buf, &render_info);
 
-          vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.geo2d.composite.h);
+          vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.composite.h);
 
           // Viewport and scissor
           VkViewport viewport = {0};
@@ -6480,7 +6925,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           scissor.extent = render_targets->stage_color_image.extent;
           vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
           // Bind stage color descriptor
-          vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.geo2d.composite.layout, 0, 1, &render_targets->geo2d_color_ds.h, 0, NULL);
+          vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.composite.layout, 0, 1, &render_targets->geo2d_color_ds.h, 0, NULL);
           vkCmdDraw(cmd_buf, 4, 1, 0, 0);
 
           // end drawing
@@ -6689,8 +7134,14 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         if(!params->omit_light)
         {
           // geo3d pre_depth_image: undefined => depth
-          r_vk_image_transition(cmd_buf, render_targets->geo3d_pre_depth_image.h, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+          r_vk_image_transition(cmd_buf, render_targets->geo3d_pre_depth_image.h,
+                                .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
+                                .dst_layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                                .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                .src_access_flag = 0,
+                                .dst_stage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                                .dst_access_flag = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                                .aspect_mask = VK_IMAGE_ASPECT_DEPTH_BIT);
 
           ///////////////////////////////////////////////////////////////////////////////
           // pre depth pass (for tiling frustum)
@@ -6818,9 +7269,13 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
           // pre_depth_image: color_output => shader_read
           r_vk_image_transition(frame->cmd_buf, render_targets->geo3d_pre_depth_image.h,
-                                    VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                    VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
-                                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+                                .src_layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                                .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                .src_stage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                                .src_access_flag = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+                                .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                .dst_access_flag = VK_ACCESS_SHADER_READ_BIT,
+                                .aspect_mask = VK_IMAGE_ASPECT_DEPTH_BIT);
 
           // TODO(XXX): need a memory berrier here to wait on z_pre and frustum culling to be finished
           {
@@ -6870,16 +7325,20 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
         // geo3d_color_image: undefined => color_output
         r_vk_image_transition(frame->cmd_buf, render_targets->geo3d_color_image.h,
-                                  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
-                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                                  VK_IMAGE_ASPECT_COLOR_BIT);
+                              .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
+                              .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              .src_access_flag = VK_ACCESS_SHADER_READ_BIT,
+                              .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
         // geo3d_normal_depth_image: undefined => color_output
         r_vk_image_transition(frame->cmd_buf, render_targets->geo3d_normal_depth_image.h,
-                                  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
-                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                                  VK_IMAGE_ASPECT_COLOR_BIT);
+                              .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
+                              .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              .src_access_flag = VK_ACCESS_SHADER_READ_BIT,
+                              .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 
         /////////////////////////////////////////////////////////////////////////////////
         //~ start geo3d rendering
@@ -7050,16 +7509,20 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
         // geo3d_color_image: color_output => shader_read
         r_vk_image_transition(frame->cmd_buf, render_targets->geo3d_color_image.h,
-                                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
-                                  VK_IMAGE_ASPECT_COLOR_BIT);
+                              .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                              .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
         // geo3d_normal_depth_image: color_output => shader_read
         r_vk_image_transition(frame->cmd_buf, render_targets->geo3d_normal_depth_image.h,
-                                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
-                                  VK_IMAGE_ASPECT_COLOR_BIT);
+                              .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                              .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
         {
           // unpack pipelines
           R_VK_Pipeline *pipeline = &wnd->pipelines.geo3d.composite;

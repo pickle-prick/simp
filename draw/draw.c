@@ -557,6 +557,19 @@ dr_crt(F32 warp, F32 scan, F32 elapsed_secs)
   return params;
 }
 
+//- k: bloom
+
+internal R_PassParams_Bloom *
+dr_bloom(F32 threshold, F32 filter_radius)
+{
+  Arena *arena = dr_thread_ctx->arena;
+  DR_Bucket *bucket = dr_top_bucket();
+  R_Pass *pass = r_pass_from_kind(arena, &bucket->passes, R_PassKind_Bloom);
+  R_PassParams_Bloom *params = pass->params_bloom;
+  params->threshold = threshold;
+  params->filter_radius = filter_radius;
+  return params;
+}
 
 //- rjf: 3d rendering pass params
 
