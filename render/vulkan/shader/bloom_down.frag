@@ -1,4 +1,5 @@
 #version 450
+// bloom_down.frag
 
 layout(location = 0) in vec2 in_uv;
 layout(binding = 0) uniform sampler2D src_texture;

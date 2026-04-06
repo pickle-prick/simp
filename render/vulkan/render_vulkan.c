@@ -1230,6 +1230,7 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
   R_VK_Swapchain *swapchain                 = &ret->swapchain;
   R_VK_Image *stage_color_image             = &ret->stage_color_image;
   R_VK_DescriptorSet *stage_color_dss       = ret->stage_color_dss;
+  R_VK_DescriptorSet *stage_color_ds        = &ret->stage_color_ds;
   R_VK_Image *stage_id_image                = &ret->stage_id_image;
   R_VK_Buffer *stage_id_cpu                 = &ret->stage_id_cpu;
   R_VK_Image *scratch_color_image           = &ret->scratch_color_image;
@@ -1296,11 +1297,21 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
       // Create staging color sampler descriptor set
       r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind_Tex2D,
                                 1, 16, NULL, &stage_color_image->views[i],
-                                &r_vk_state->samplers[R_Tex2DSampleKind_Nearest],
+                                // &r_vk_state->samplers[R_Tex2DSampleKind_Nearest],
+                                &r_vk_state->samplers[R_Tex2DSampleKind_Linear],
                                 &stage_color_dss[i]);
     }
+
+    // Create main sampler view, this one will be used for copying to swapchain image, so we should use nearest sampler
+    {
+      stage_color_image->view = stage_color_image->views[0];
+      // Create staging color sampler descriptor set
+      r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind_Tex2D,
+                                1, 16, NULL, &stage_color_image->view,
+                                &r_vk_state->samplers[R_Tex2DSampleKind_Nearest],
+                                stage_color_ds);
+    }
   }
-  stage_color_image->view = stage_color_image->views[0];
 
   // stage_id color image
   {
@@ -1841,6 +1852,7 @@ r_vk_render_targets_destroy(R_VK_RenderTargets *render_targets)
   {
     r_vk_descriptor_set_destroy(&render_targets->stage_color_dss[i]);
   }
+  r_vk_descriptor_set_destroy(&render_targets->stage_color_ds);
   r_vk_memory_release(render_targets->stage_color_image.memory);
 
   // stage id image
@@ -3767,9 +3779,9 @@ r_vk_sampler2d(R_Tex2DSampleKind kind)
   // VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER:      return a solid color when sampling beyond the dimensions of the image
   // It doesn't really matter which addressing mode we use here, because we're not going to sample outside of the image in this tutorial
   // However, the repeat mode is probably the most common mode, because it can be used to tile textures like floors an walls
-  create_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-  create_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-  create_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+  create_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  create_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  create_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   // These two fields specify if anisotropic filtering should be used
   // There is no reason not to use this unless performance is concern
   // The maxAnisotropy field limits the amount of texel samples that can be used to calculate the final color
@@ -5746,7 +5758,7 @@ r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
     vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
 
     // bind stage color descriptor
-    vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.finalize.layout, 0, 1, &wnd->render_targets->stage_color_dss[0].h, 0, NULL);
+    vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.finalize.layout, 0, 1, &wnd->render_targets->stage_color_ds.h, 0, NULL);
 
     // draw the quad
     vkCmdDraw(cmd_buf, 4, 1, 0, 0);
@@ -6193,7 +6205,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         vkCmdBeginRendering(cmd_buf, &render_info);
 
         // bind stage color descriptor
-        vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.noise.layout, 0, 1, &render_targets->stage_color_dss[0].h, 0, NULL);
+        vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.noise.layout, 0, 1, &render_targets->stage_color_ds.h, 0, NULL);
 
         vkCmdDraw(cmd_buf, 4, 1, 0, 0);
 
@@ -6327,7 +6339,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         vkCmdBeginRendering(cmd_buf, &render_info);
 
         // bind stage color descriptor
-        vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.edge.layout, 0, 1, &render_targets->stage_color_dss[0].h, 0, NULL);
+        vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.edge.layout, 0, 1, &render_targets->stage_color_ds.h, 0, NULL);
         // bind edge color descriptor
         vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.edge.layout, 1, 1, &render_targets->edge_ds.h, 0, NULL);
 
@@ -6458,7 +6470,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         vkCmdBeginRendering(cmd_buf, &render_info);
 
         // bind stage color descriptor
-        vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.crt.layout, 0, 1, &render_targets->stage_color_dss[0].h, 0, NULL);
+        vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.crt.layout, 0, 1, &render_targets->stage_color_ds.h, 0, NULL);
 
         vkCmdDraw(cmd_buf, 4, 1, 0, 0);
 
@@ -6593,7 +6605,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           VkRenderingAttachmentInfo color_attachment_info = {0};
           color_attachment_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
           color_attachment_info.imageView = mip_views[i+1];
-          color_attachment_info.imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
+          color_attachment_info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
           color_attachment_info.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
           color_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 
@@ -6612,7 +6624,9 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &mip_descriptors[i].h, 0,NULL);
 
           // Push Constants
-          R_VK_PUSH_BloomDown push = {.src_texel_size = {1.0f / (float)mip_w, 1.0f / (float)mip_h}, .threshold = i == 0 ? params->threshold : 0.0f};
+          U32 src_mip_w = ClampBot(1, base_width>>i);
+          U32 src_mip_h = ClampBot(1, base_height>>i);
+          R_VK_PUSH_BloomDown push = {.src_texel_size = {1.0f / (float)src_mip_w, 1.0f / (float)src_mip_h}, .threshold = i == 0 ? params->threshold : 0.0f};
           vkCmdPushConstants(cmd_buf, pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(R_VK_PUSH_BloomDown), &push);
 
           vkCmdDraw(cmd_buf,4,1,0,0);
@@ -6676,7 +6690,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           VkRenderingAttachmentInfo color_attachment_info = {0};
           color_attachment_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
           color_attachment_info.imageView = mip_views[i];
-          color_attachment_info.imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
+          color_attachment_info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
           color_attachment_info.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
           color_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 
@@ -6695,7 +6709,9 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &mip_descriptors[i+1].h, 0,NULL);
 
           // Push Constants
-          R_VK_PUSH_BloomUp push = {.filter_radius = params->filter_radius};
+          U32 src_mip_w = ClampBot(1, base_width>>(i+1));
+          U32 src_mip_h = ClampBot(1, base_height>>(i+1));
+          R_VK_PUSH_BloomUp push = {.src_texel_size = {1.0f / (float)src_mip_w, 1.0f / (float)src_mip_h}, .filter_radius = params->filter_radius};
           vkCmdPushConstants(cmd_buf, pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(R_VK_PUSH_BloomUp), &push);
 
           vkCmdDraw(cmd_buf,4,1,0,0);

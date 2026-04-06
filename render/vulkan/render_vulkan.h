@@ -297,6 +297,7 @@ struct R_VK_PUSH_BloomDown
 typedef struct R_VK_PUSH_BloomUp R_VK_PUSH_BloomUp;
 struct R_VK_PUSH_BloomUp
 {
+  Vec2F32 src_texel_size;
   F32 filter_radius;
 };
 
@@ -592,7 +593,8 @@ struct R_VK_RenderTargets
   R_VK_Swapchain     swapchain;
 
   R_VK_Image         stage_color_image;
-  R_VK_DescriptorSet stage_color_dss[6]; // mutiple mip level
+  R_VK_DescriptorSet stage_color_ds;
+  R_VK_DescriptorSet stage_color_dss[6]; // mutiple mip level with linear viewer (for bloom pass)
   R_VK_Image         stage_id_image;
   R_VK_Buffer        stage_id_cpu;
   // scratch
