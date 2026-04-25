@@ -74,6 +74,33 @@ return old_value;
 #endif
 
 ////////////////////////////////
+//~ Global Accessor/Mutator
+
+internal U64
+r_vk_frame_index()
+{
+  return r_vk_state->frame_index;
+}
+
+internal R_VK_PipelineSet *
+r_vk_pipeline_set()
+{
+  return &r_vk_state->pipeline_set;
+}
+
+internal Arena *
+r_vk_frame_arena()
+{
+  return r_vk_state->frame_arena;
+}
+
+internal R_VK_Frame *
+r_vk_current_frame()
+{
+  return &r_vk_state->frames[r_vk_state->frame_index%ArrayCount(r_vk_state->frames)];
+}
+
+////////////////////////////////
 //~ Window Functions
 
 internal R_Handle
@@ -97,11 +124,15 @@ internal void
 r_vk_window_resize(R_VK_Window *window)
 {
   ProfBeginFunction();
+
   // Unpack some variables
   R_VK_PhysicalDevice *pdevice = r_vk_pdevice();
-  R_VK_Surface *surface = &window->surface;
   R_VK_LogicalDevice *ldevice = r_vk_ldevice();
-  R_VK_RenderTargets *render_targets = window->render_targets;
+  U64 frame_index = r_vk_state->frame_index;
+
+  R_VK_Surface *surface = &window->surface;
+  R_VK_RenderTargetSet *rt_set = window->frames[frame_index%R_VK_MAX_FRAMES_IN_FLIGHT].rt_set;
+  R_VK_Swapchain *swapchain = window->swapchain;
 
   // NOTE(k): if the rate of resizing is too high, we could be lagged behind bag destruction, since we're not using generation/idx to track first_to_free_bag
   // frames's bag could be out of synced constantly, and the count of to_free_bag will keep increasing, and resulting out of gpu memory 
@@ -135,13 +166,28 @@ r_vk_window_resize(R_VK_Window *window)
   // In theory it can be possible for the swapchain image format to change during an applications's lifetime, e.g. when moving a window from an standard range to an high dynamic range monitor
   // This may require the application to recreate the renderpass to make sure the change between dynamic ranges is properly reflected
 
-  VkFormat old_swapchain_format = render_targets->swapchain.format;
+  VkFormat old_swapchain_format = swapchain->format;
   r_vk_surface_update(surface);
 
-  // we need to recreate the render targets if either size or format of swapchain is chagned
-  SLLQueuePush(r_vk_state->first_to_free_render_targets, r_vk_state->last_to_free_render_targets, render_targets);
-  render_targets->deprecated_at_frame = r_vk_state->frame_index;
-  window->render_targets = r_vk_render_targets_alloc(window->os_wnd, &window->surface, window->render_targets);
+  // We need to recreate the rt_set and swapchain if either size or format of swapchain is chagned
+  {
+    // Query format and color space for swapchain
+    VkFormat swapchain_format;
+    VkColorSpaceKHR swapchain_color_space;
+    r_vk_format_for_swapchain(surface->formats, surface->format_count, &swapchain_format, &swapchain_color_space);
+    R_VK_Swapchain *next_swapchain = r_vk_swapchain_alloc(surface, window->os_wnd, swapchain_format, swapchain_color_space, 0);
+    // Push swapchain to to-free list
+    SLLQueuePush(r_vk_state->first_to_free_swapchain, r_vk_state->last_to_free_swapchain, window->swapchain);
+    window->swapchain = next_swapchain;
+
+    // Create rt_set for each frame
+    for(U64 i = 0; i < R_VK_MAX_FRAMES_IN_FLIGHT; ++i)
+    {
+      R_VK_RenderTargetSet *next_rt_set  = r_vk_render_target_set_alloc(window->os_wnd, surface, next_swapchain->extent);
+      SLLQueuePush(r_vk_state->first_to_free_rt_set, r_vk_state->last_to_free_rt_set, window->frames[i].rt_set);
+      window->frames[i].rt_set = next_rt_set;
+    }
+  }
 
   // NOTE(k): if format is changed, we would also need to recreate the render pass
   // bool swapchain_format_changed = window->render_targets->swapchain.format != old_swapchain_format;
@@ -154,6 +200,12 @@ r_vk_window_resize(R_VK_Window *window)
   // r_vk_rendpass_grp_submit(window->bag, window->rendpass_grp);
 
   ProfEnd();
+}
+
+internal R_VK_WindowFrame *
+r_vk_frame_from_window(R_VK_Window *window)
+{
+  return &window->frames[r_vk_state->frame_index%ArrayCount(window->frames)];
 }
 
 ////////////////////////////////
@@ -201,318 +253,245 @@ r_vk_handle_from_buffer(R_VK_Buffer *buffer)
 
 // FIXME: to be removed, this is not a robust solution for staging memory
 
-internal void
-r_vk_stage_init()
-{
-  R_VK_Stage *stage = &r_vk_state->stage;
-  R_VK_PhysicalDevice *pdevice = r_vk_pdevice();
-  R_VK_LogicalDevice *ldevice = r_vk_ldevice();
-  VkDevice device = ldevice->h;
-  // NOTE(k): can't set it to 0 on startup, it will causing conflict on first frame
-  stage->last_touch_frame_index = max_U64;
+//internal void
+//r_vk_stage_init()
+//{
+//  R_VK_Stage *stage = &r_vk_state->stage;
+//  R_VK_PhysicalDevice *pdevice = r_vk_pdevice();
+//  R_VK_LogicalDevice *ldevice = r_vk_ldevice();
+//  VkDevice device = ldevice->h;
+//  // NOTE(k): can't set it to 0 on startup, it will causing conflict on first frame
+//  stage->last_touch_frame_index = max_U64;
+//
+//  // command pool & buffer
+//  VkCommandPool cp;
+//  VkCommandPoolCreateInfo cpci = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+//  cpci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+//  cpci.queueFamilyIndex = pdevice->gfx_queue_family_index;
+//  VK_Assert(vkCreateCommandPool(device, &cpci, NULL, &cp));
+//
+//  // commands
+//  for(U64 i = 0; i < R_VK_STAGING_IN_FLIGHT_COUNT; i++)
+//  {
+//    VkCommandBuffer cmd;
+//    VkCommandBufferAllocateInfo cbai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+//    cbai.commandPool = cp;
+//    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+//    cbai.commandBufferCount = 1;
+//    VK_Assert(vkAllocateCommandBuffers(device, &cbai, &cmd));
+//    stage->cmds[i] = cmd;
+//  }
+//
+//  // fences
+//  for(U64 i = 0; i < R_VK_STAGING_IN_FLIGHT_COUNT; i++)
+//  {
+//    stage->fences[i] = r_vk_fence();
+//  }
+//
+//  // init staging ring buffer
+//  {
+//    // TODO(Next): this one will use local mem, and it's not safe to use for large batch 
+//    U64 size = MB(512);
+//    R_VK_StagingRing *ring = &stage->ring;
+//
+//    VkBuffer buffer;
+//    VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+//    bci.size = size;
+//    bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+//    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+//    VK_Assert(vkCreateBuffer(device, &bci, NULL, &buffer));
+//
+//    VkMemoryRequirements mem_requirements;
+//    vkGetBufferMemoryRequirements(device, buffer, &mem_requirements);
+//
+//    VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+//    VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+//    mai.allocationSize = mem_requirements.size;
+//    mai.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
+//
+//    VkDeviceMemory memory;
+//    VK_Assert(vkAllocateMemory(device, &mai, NULL, &memory));
+//    VK_Assert(vkBindBufferMemory(device, buffer, memory, 0));
+//
+//    void *mapped;
+//    VK_Assert(vkMapMemory(device, memory, 0, mem_requirements.size, 0, &mapped));
+//
+//    ring->buffer = buffer; 
+//    ring->memory = memory; 
+//    ring->mapped = mapped;
+//    ring->cap = size;
+//    ring->head = 0;
+//    ring->tail = 0;
+//  }
+//}
 
-  // command pool & buffer
-  VkCommandPool cp;
-  VkCommandPoolCreateInfo cpci = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
-  cpci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-  cpci.queueFamilyIndex = pdevice->gfx_queue_family_index;
-  VK_Assert(vkCreateCommandPool(device, &cpci, NULL, &cp));
+// internal R_VK_StagingSlice
+// r_vk_staging_slice_from_size(U64 size, U64 alignment)
+// {
+//   R_VK_StagingSlice ret = {0};
+// 
+//   R_VK_StagingRing *ring = &r_vk_state->stage.ring;
+//   U64 aligned_head = AlignPow2(ring->head, alignment);
+//   if(ring->tail <= aligned_head)
+//   {
+//     // two free segments: [algined_head, cap] and [0, tail]
+//     if((ring->cap-aligned_head) >= size)
+//     {
+//       ret.offset = aligned_head;
+//       ret.size = size;
+//       ret.ptr = (U8*)(ring->mapped) + aligned_head;
+// 
+//       // update head
+//       ring->head = aligned_head+size;
+//       if(ring->head == ring->cap) ring->head = 0; // wrap if exact end
+//     }
+//     else if(ring->tail >= size)
+//     {
+//       // wrap
+//       ret.offset = 0;
+//       ret.size = size;
+//       ret.ptr = ring->mapped;
+//       ring->head = size;
+//     }
+//   }
+//   else
+//   {
+//     // single free segments: [aligned_head, tail]
+//     if(size <= (ring->tail-aligned_head))
+//     {
+//       ret.offset = aligned_head;
+//       ret.size = size;
+//       ret.ptr = (U8*)(ring->mapped)+aligned_head;
+//       ring->head = aligned_head+size;
+//     }
+//   }
+//   return ret;
+// }
 
-  // commands
-  for(U64 i = 0; i < R_VK_STAGING_IN_FLIGHT_COUNT; i++)
-  {
-    VkCommandBuffer cmd;
-    VkCommandBufferAllocateInfo cbai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
-    cbai.commandPool = cp;
-    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cbai.commandBufferCount = 1;
-    VK_Assert(vkAllocateCommandBuffers(device, &cbai, &cmd));
-    stage->cmds[i] = cmd;
-  }
+// internal U64
+// r_vk_free_size_from_staging_ring(U64 alignment)
+// {
+//   U64 size = 0;
+// 
+//   R_VK_StagingRing *ring = &r_vk_state->stage.ring;
+//   U64 aligned_head = AlignPow2(ring->head, alignment);
+// 
+//   // two free segments: [algined_head, cap] and [0, tail]
+//   if(ring->tail <= aligned_head)
+//   {
+//     size = Max(ring->cap-aligned_head, ring->tail);
+//   }
+//   // single free segments: [aligned_head, tail]
+//   else
+//   {
+//     size = ring->tail - aligned_head;
+//   }
+//   return size;
+// }
 
-  // fences
-  for(U64 i = 0; i < R_VK_STAGING_IN_FLIGHT_COUNT; i++)
-  {
-    stage->fences[i] = r_vk_fence();
-  }
+// internal void
+// r_vk_stage_begin()
+// {
+//   R_VK_Stage *stage = &r_vk_state->stage;
+//   R_VK_StagingBatch *batch = &stage->batches[stage->idx];
+//   VkCommandBuffer cmd = stage->cmds[stage->idx];
+// 
+//   // wait for current batch to be ready
+//   do
+//   {
+//     r_vk_stage_bump();
+//   } while(batch->size != 0);
+// 
+//   // begin recording
+//   VkCommandBufferBeginInfo begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+//   begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+//   begin_info.pInheritanceInfo = 0;
+//   // if the command buffer was already recorded once, then a call to vkBeginCommandBuffer will implicity reset it
+//   VK_Assert(vkBeginCommandBuffer(cmd, &begin_info));
+// 
+//   // bump stage frame index
+//   stage->last_touch_frame_index = r_vk_state->frame_index;
+// }
 
-  // init staging ring buffer
-  {
-    // TODO(Next): this one will use local mem, and it's not safe to use for large batch 
-    U64 size = MB(512);
-    R_VK_StagingRing *ring = &stage->ring;
+// internal void
+// r_vk_stage_end()
+// {
+//   R_VK_Stage *stage = &r_vk_state->stage;
+// 
+//   // unpack stage batch
+//   R_VK_StagingBatch *batch = &stage->batches[stage->idx];
+//   VkCommandBuffer cmd = stage->cmds[stage->idx];
+//   VkFence fence = stage->fences[stage->idx];
+// 
+//   // check all images, transfer them into shader read stage
+//   for(U64 i = 0; i < darray_size(batch->images); i++)
+//   {
+//     R_VK_Image *image = batch->images[i];
+//     Assert(image->gpu_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+//     // transfer image layout to shader read
+//     r_vk_image_transition(cmd, image->h,
+//                           .src_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+//                           .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+//                           .src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
+//                           .src_access_flag = VK_ACCESS_TRANSFER_WRITE_BIT,
+//                           .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+//                           .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
+//                           
+//     image->gpu_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+//   }
+// 
+//   // end command buffer & submit
+//   {
+//     VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+//     si.commandBufferCount = 1;
+//     si.pCommandBuffers = &cmd;
+//     VK_Assert(vkEndCommandBuffer(cmd));
+//     VK_Assert(vkResetFences(r_vk_ldevice()->h, 1, &fence));
+//     VK_Assert(vkQueueSubmit(r_vk_ldevice()->gfx_queue, 1, &si, fence));
+//   }
+// 
+//   Assert(batch->size > 0);
+//   // flag batch
+//   batch->submitted = 1;
+//   // rotate stage idx
+//   stage->idx = (stage->idx+1)%R_VK_STAGING_IN_FLIGHT_COUNT;
+// }
 
-    VkBuffer buffer;
-    VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-    bci.size = size;
-    bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    VK_Assert(vkCreateBuffer(device, &bci, NULL, &buffer));
-
-    VkMemoryRequirements mem_requirements;
-    vkGetBufferMemoryRequirements(device, buffer, &mem_requirements);
-
-    VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-    VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-    mai.allocationSize = mem_requirements.size;
-    mai.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
-
-    VkDeviceMemory memory;
-    VK_Assert(vkAllocateMemory(device, &mai, NULL, &memory));
-    VK_Assert(vkBindBufferMemory(device, buffer, memory, 0));
-
-    void *mapped;
-    VK_Assert(vkMapMemory(device, memory, 0, mem_requirements.size, 0, &mapped));
-
-    ring->buffer = buffer; 
-    ring->memory = memory; 
-    ring->mapped = mapped;
-    ring->cap = size;
-    ring->head = 0;
-    ring->tail = 0;
-  }
-}
-
-internal R_VK_StagingSlice
-r_vk_staging_slice_from_size(U64 size, U64 alignment)
-{
-  R_VK_StagingSlice ret = {0};
-
-  R_VK_StagingRing *ring = &r_vk_state->stage.ring;
-  U64 aligned_head = AlignPow2(ring->head, alignment);
-  if(ring->tail <= aligned_head)
-  {
-    // two free segments: [algined_head, cap] and [0, tail]
-    if((ring->cap-aligned_head) >= size)
-    {
-      ret.offset = aligned_head;
-      ret.size = size;
-      ret.ptr = (U8*)(ring->mapped) + aligned_head;
-
-      // update head
-      ring->head = aligned_head+size;
-      if(ring->head == ring->cap) ring->head = 0; // wrap if exact end
-    }
-    else if(ring->tail >= size)
-    {
-      // wrap
-      ret.offset = 0;
-      ret.size = size;
-      ret.ptr = ring->mapped;
-      ring->head = size;
-    }
-  }
-  else
-  {
-    // single free segments: [aligned_head, tail]
-    if(size <= (ring->tail-aligned_head))
-    {
-      ret.offset = aligned_head;
-      ret.size = size;
-      ret.ptr = (U8*)(ring->mapped)+aligned_head;
-      ring->head = aligned_head+size;
-    }
-  }
-  return ret;
-}
-
-internal U64
-r_vk_free_size_from_staging_ring(U64 alignment)
-{
-  U64 size = 0;
-
-  R_VK_StagingRing *ring = &r_vk_state->stage.ring;
-  U64 aligned_head = AlignPow2(ring->head, alignment);
-
-  // two free segments: [algined_head, cap] and [0, tail]
-  if(ring->tail <= aligned_head)
-  {
-    size = Max(ring->cap-aligned_head, ring->tail);
-  }
-  // single free segments: [aligned_head, tail]
-  else
-  {
-    size = ring->tail - aligned_head;
-  }
-  return size;
-}
-
-internal void
-r_vk_stage_begin()
-{
-  R_VK_Stage *stage = &r_vk_state->stage;
-  R_VK_StagingBatch *batch = &stage->batches[stage->idx];
-  VkCommandBuffer cmd = stage->cmds[stage->idx];
-
-  // wait for current batch to be ready
-  do
-  {
-    r_vk_stage_bump();
-  } while(batch->size != 0);
-
-  // begin recording
-  VkCommandBufferBeginInfo begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-  begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
-  begin_info.pInheritanceInfo = 0;
-  // if the command buffer was already recorded once, then a call to vkBeginCommandBuffer will implicity reset it
-  VK_Assert(vkBeginCommandBuffer(cmd, &begin_info));
-
-  // bump stage frame index
-  stage->last_touch_frame_index = r_vk_state->frame_index;
-}
-
-internal void
-r_vk_stage_end()
-{
-  R_VK_Stage *stage = &r_vk_state->stage;
-
-  // unpack stage batch
-  R_VK_StagingBatch *batch = &stage->batches[stage->idx];
-  VkCommandBuffer cmd = stage->cmds[stage->idx];
-  VkFence fence = stage->fences[stage->idx];
-
-  // check all images, transfer them into shader read stage
-  for(U64 i = 0; i < darray_size(batch->images); i++)
-  {
-    R_VK_Image *image = batch->images[i];
-    Assert(image->gpu_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    // transfer image layout to shader read
-    r_vk_image_transition(cmd, image->h,
-                          .src_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                          .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                          .src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
-                          .src_access_flag = VK_ACCESS_TRANSFER_WRITE_BIT,
-                          .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                          .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
-                          
-    image->gpu_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  }
-
-  // end command buffer & submit
-  {
-    VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &cmd;
-    VK_Assert(vkEndCommandBuffer(cmd));
-    VK_Assert(vkResetFences(r_vk_ldevice()->h, 1, &fence));
-    VK_Assert(vkQueueSubmit(r_vk_ldevice()->gfx_queue, 1, &si, fence));
-  }
-
-  Assert(batch->size > 0);
-  // flag batch
-  batch->submitted = 1;
-  // rotate stage idx
-  stage->idx = (stage->idx+1)%R_VK_STAGING_IN_FLIGHT_COUNT;
-}
-
-internal void
-r_vk_stage_bump()
-{
-  // unpack stage buffer
-  R_VK_Stage *stage = &r_vk_state->stage;
-  VkCommandBuffer cmd = stage->cmds[stage->idx];
-  R_VK_StagingBatch *batch = &stage->batches[stage->idx];
-
-  // bump tail
-  for(U64 stage_idx = stage->idx, i = 0; i < R_VK_STAGING_IN_FLIGHT_COUNT; stage_idx = (stage_idx+1)%R_VK_STAGING_IN_FLIGHT_COUNT, i++)
-  {
-    R_VK_StagingBatch *batch = &stage->batches[stage_idx];
-
-    // if-flight/dirty? -> check fence
-    if(batch->submitted)
-    {
-      VkFence fence = stage->fences[stage_idx];
-      VkResult r = vkGetFenceStatus(r_vk_ldevice()->h, fence);
-
-      // stage batch done? -> move tail & reset status
-      if(r == VK_SUCCESS)
-      {
-        stage->ring.tail = batch->end;
-
-        // reset batch state
-        MemoryZeroStruct(batch);
-      }
-      else
-      {
-        break;
-      }
-    }
-  }
-}
 
 internal void
 r_vk_stage_copy_image(void *src, U64 size, R_VK_Image *dst, Vec3S32 offset, Vec3S32 extent)
 {
-  B32 touched_this_frame = r_vk_state->stage.last_touch_frame_index == r_vk_state->frame_index;
-  if(!touched_this_frame)
-  {
-    r_vk_stage_begin();
-  }
+  R_VK_Buffer *staging_buffer = r_vk_buffer_from_pool(R_VK_BufferPoolKind_Scratch, size);
+  R_VK_Frame *frame = r_vk_current_frame();
+  R_VK_FrameStage *stage = &frame->stages[0];
 
-  // unpack batch
-  R_VK_Stage *stage = &r_vk_state->stage;
-  VkBuffer staging_buffer = r_vk_state->stage.ring.buffer;
-  R_VK_StagingBatch *batch = &stage->batches[stage->idx];
-  VkCommandBuffer cmd = stage->cmds[stage->idx];
+  // Copy data to stage buffer
+  MemoryCopy(staging_buffer->memory->mapped, src, size);
 
-  // alloc a ring slice
-  R_VK_StagingSlice slice = r_vk_staging_slice_from_size(size, 4);
-  // FIXME: keep bumping if more space is needed, we may need to submit early for works this frame
-  // also assert the size if smaller than the total size of ring
-  AssertAlways(slice.size == size);
+  // Fill staging info
+  staging_buffer->staging.image.dst = dst;
+  staging_buffer->staging.image.offset = offset;
+  staging_buffer->staging.image.extent = extent;
 
-  // copy data to stage buffer
-  MemoryCopy(slice.ptr, src, size);
+  // Push to front of frame's stage buffer
+  SLLQueuePush(stage->first_staging_buffer, stage->last_staging_buffer, staging_buffer);
+}
 
-  // fill batch
-  B32 batch_touched_this_frame = batch->size != 0;
-  if(batch_touched_this_frame) batch->start = slice.offset;
-  batch->end = slice.offset+slice.size;
-  batch->size += slice.size;
+internal void
+r_vk_stage_copy_buffer(void *src, U64 size, R_VK_Buffer *dst, VkBufferCopy *copy_region)
+{
+  R_VK_Buffer *staging_buffer = r_vk_buffer_from_pool(R_VK_BufferPoolKind_Scratch, size);
+  R_VK_Frame *frame = r_vk_current_frame();
+  R_VK_FrameStage *stage = &frame->stages[0];
 
-  B32 image_first_copy_this_frame = dst->gpu_layout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-  // issue copy command
-  { 
-    if(image_first_copy_this_frame)
-    {
-      // There is actually a special type of image layout that supports all operations, VK_IMAGE_LAYOUT_GENERAL
-      // The problem with it, of course, is that it doesn't necessarily offer the best performance for any operation
-      // It is required for some special cases, like using an image as both input and output, or for reading an image after it has left the preinitialized layout
-      r_vk_image_transition(cmd, dst->h,
-                            .src_layout = dst->gpu_layout,
-                            .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                            .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                            .src_access_flag = 0,
-                            .dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
-                            .dst_access_flag = VK_ACCESS_TRANSFER_WRITE_BIT);
-      dst->gpu_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    }
+  // Copy data to stage buffer
+  MemoryCopy(staging_buffer->memory->mapped, src, size);
 
-    VkBufferImageCopy region =
-    {
-      .bufferOffset = slice.offset,
-      // These two fields specify how the pixels are laid out in memory
-      // For example, you could have some padding bytes between rows of the image
-      // Specifying 0 for both indicates that the pixels are simply tightly packed like they are in our case
-      // The imageSubresource, imageOffset and imageExtent fields indicate to which part of the image we want to copy the pixels
-      .bufferRowLength = 0,
-      .bufferImageHeight = 0,
-      .imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-      .imageSubresource.mipLevel = 0,
-      .imageSubresource.baseArrayLayer = 0,
-      .imageSubresource.layerCount = 1,
-      .imageOffset = {offset.x, offset.y, offset.z}, // These two fields indicate to which part of the image we want to copy the pixels
-      .imageExtent = {extent.x, extent.y, extent.z},
-    };
+  // Fill staging info
+  NotImplemented;
 
-    // it's possible to specify an array of VkBufferImageCopy to perform many different copies from this buffer to the image in on operation 
-    vkCmdCopyBufferToImage(cmd, staging_buffer, dst->h, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-  }
-
-  // NOTE(k): because we could copy many times per frame for a given image (font atlas for example), we move the image transition to the end of frame
-  // FIXME: can we do better?
-  // Push image list
-  if(image_first_copy_this_frame) darray_push(r_vk_state->frame_arena, batch->images, dst);
+  // Push to front of frame's stage buffer
+  SLLQueuePush(stage->first_staging_buffer, stage->last_staging_buffer, staging_buffer);
 }
 
 ////////////////////////////////
@@ -521,12 +500,20 @@ r_vk_stage_copy_image(void *src, U64 size, R_VK_Image *dst, Vec3S32 offset, Vec3
 
 //- swapchain
 
-internal R_VK_Swapchain
-r_vk_swapchain(R_VK_Surface *surface, OS_Handle os_wnd, VkFormat format, VkColorSpaceKHR color_space, R_VK_Swapchain *old_swapchain)
+internal R_VK_Swapchain *
+r_vk_swapchain_alloc(R_VK_Surface *surface, OS_Handle os_wnd, VkFormat format, VkColorSpaceKHR color_space, R_VK_Swapchain *old_swapchain)
 {
-  R_VK_Swapchain swapchain = {0};
-  swapchain.format      = format;
-  swapchain.color_space = color_space;
+  R_VK_Swapchain *ret = r_vk_state->first_free_swapchain;
+
+  if(ret == 0)
+  {
+    ret = push_array_no_zero(r_vk_state->arena, R_VK_Swapchain, 1);
+  }
+  else
+  {
+    SLLStackPop(r_vk_state->first_free_swapchain);
+  }
+  MemoryZeroStruct(ret);
 
   // The presentation mode is arguably the most important setting for the swap chain, because it represents the actual conditions for showing images to 
   // the screen. There are four possible modes available in Vulkan
@@ -573,9 +560,10 @@ r_vk_swapchain(R_VK_Surface *surface, OS_Handle os_wnd, VkFormat format, VkColor
   // Instead, we must use glfwGetFramebufferSize to query the resolution of the window in pixels before matching it against the minimum and maximum image extent
   // VkExtent2D selected_surface_extent;
 
+  VkExtent2D extent;
   if(surface->caps.currentExtent.width != 0xFFFFFFFF)
   {
-    swapchain.extent = surface->caps.currentExtent;
+    extent = surface->caps.currentExtent;
   }
   else
   {
@@ -586,8 +574,8 @@ r_vk_swapchain(R_VK_Surface *surface, OS_Handle os_wnd, VkFormat format, VkColor
 
     width  = Clamp(surface->caps.minImageExtent.width, width, surface->caps.maxImageExtent.width);
     height = Clamp(surface->caps.minImageExtent.height, height, surface->caps.maxImageExtent.height);
-    swapchain.extent.width  = width;
-    swapchain.extent.height = height;
+    extent.width  = width;
+    extent.height = height;
   }
 
   // How many images we would like to have in the swap chain. The implementation specifies the minimum number that it requires to function
@@ -626,9 +614,9 @@ r_vk_swapchain(R_VK_Surface *surface, OS_Handle os_wnd, VkFormat format, VkColor
   VkSwapchainCreateInfoKHR create_info = {VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
   create_info.surface          = surface->h;
   create_info.minImageCount    = min_swapchain_image_count;
-  create_info.imageFormat      = swapchain.format;
-  create_info.imageColorSpace  = swapchain.color_space;
-  create_info.imageExtent      = swapchain.extent;
+  create_info.imageFormat      = format;
+  create_info.imageColorSpace  = color_space;
+  create_info.imageExtent      = extent;
   create_info.imageArrayLayers = 1;
   create_info.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
   // NOTE(k): if we want to manully clear the swap image, the VK_IMAGE_USAGE_TRANSFER_DST_BIT is necessary
@@ -661,19 +649,20 @@ r_vk_swapchain(R_VK_Surface *surface, OS_Handle os_wnd, VkFormat format, VkColor
     create_info.pQueueFamilyIndices   = NULL; // Optional
   }
 
-  VK_Assert(vkCreateSwapchainKHR(r_vk_ldevice()->h, &create_info, NULL, &swapchain.h));
+  VkSwapchainKHR swapchain = {0};
+  VK_Assert(vkCreateSwapchainKHR(r_vk_ldevice()->h, &create_info, NULL, &swapchain));
 
   ////////////////////////////////
   //~ Retrieving the swap chain images
 
   // The swapchain has been created now, so all the remains is retrieving the handles of the [VkImage]s in it
   // We will reference these during rendering operations
+  U32 image_count = 0;
+  VkImage images[ArrayCount(ret->images)] = {0};
   {
-    U32 image_count = 0;
-    VK_Assert(vkGetSwapchainImagesKHR(r_vk_ldevice()->h, swapchain.h, &image_count, NULL));
-    image_count = ClampBot(image_count, ArrayCount(swapchain.images));
-    swapchain.image_count = image_count;
-    VK_Assert(vkGetSwapchainImagesKHR(r_vk_ldevice()->h, swapchain.h, &swapchain.image_count, swapchain.images));
+    VK_Assert(vkGetSwapchainImagesKHR(r_vk_ldevice()->h, swapchain, &image_count, NULL));
+    image_count = ClampBot(image_count, ArrayCount(ret->images));
+    VK_Assert(vkGetSwapchainImagesKHR(r_vk_ldevice()->h, swapchain, &image_count, images));
   }
 
   ////////////////////////////////
@@ -685,16 +674,17 @@ r_vk_swapchain(R_VK_Surface *surface, OS_Handle os_wnd, VkFormat format, VkColor
   //      for example if it should be treated as 2D texture depth texture without any mipmapping levels
   // Here, we are create a basic image view for every image in the swapchain so that we can use them as color targets later on
   // VkImageView swapchain_image_views[swapchain_image_count];
-  for(U64 i = 0; i < swapchain.image_count; i++)
+  VkImageView image_views[ArrayCount(ret->image_views)] = {0};
+  for(U64 i = 0; i < image_count; i++)
   {
     VkImageViewCreateInfo create_info =
     {
       .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-      .image = swapchain.images[i],
+      .image = images[i],
       // The viewType and format fields specify how you the image data should be interpreted
       // The viewType parameter allows you to treat images as 1D textures, 2D textures, 3D textures and cube maps
       .viewType = VK_IMAGE_VIEW_TYPE_2D,
-      .format   = swapchain.format,
+      .format   = format,
       // The components field allows you to swizzle the color channels around
       // For example, you can map all of the channesl to the red channel for a monochrome texture.
       // You can also map constant values of 0 and 1 to a channel
@@ -713,16 +703,47 @@ r_vk_swapchain(R_VK_Surface *surface, OS_Handle os_wnd, VkFormat format, VkColor
       .subresourceRange.layerCount     = 1,
     };
 
-    VK_Assert(vkCreateImageView(r_vk_ldevice()->h, &create_info, NULL, &swapchain.image_views[i]));
+    VK_Assert(vkCreateImageView(r_vk_ldevice()->h, &create_info, NULL, &image_views[i]));
     // Unlike images, the image views were explicitly created by us, so we need to add a similar loop to destroy them again at the end of the program
   }
 
   // create submit semaphores (one per swapchain image)
-  for(U64 i = 0; i < swapchain.image_count; i++)
+  VkSemaphore submit_semaphores[ArrayCount(ret->submit_semaphores)] = {0};
+  for(U64 i = 0; i < image_count; i++)
   {
-    swapchain.submit_semaphores[i] = r_vk_semaphore(r_vk_ldevice()->h);
+    submit_semaphores[i] = r_vk_semaphore(r_vk_ldevice()->h);
   }
-  return swapchain;
+
+  // Fill Info & Return
+  ret->h = swapchain;
+  ret->extent = extent;
+  ret->format = format;
+  ret->color_space = color_space;
+  ret->image_count = image_count;
+  MemoryCopy(ret->images, images, sizeof(images));
+  MemoryCopy(ret->image_views, image_views, sizeof(image_views));
+  MemoryCopy(ret->submit_semaphores, submit_semaphores, sizeof(submit_semaphores));
+
+  return ret;
+}
+
+internal void
+r_vk_swapchain_release(R_VK_Swapchain *swapchain)
+{
+  // Destroy swapchain
+  for(U64 i = 0; i < swapchain->image_count; i++)
+  {
+    vkDestroyImageView(r_vk_ldevice()->h, swapchain->image_views[i], NULL);
+
+    // TODO(XXX): we should be able to reuse these semaphores
+    // TODO(BUG): it's not safe to destroy semaphore here, fix it later
+    //            can't be called on VkSemaphore 0x4a000000004a that is currently in use by VkQueue
+    vkDestroySemaphore(r_vk_ldevice()->h, swapchain->submit_semaphores[i], NULL);
+  }
+  vkDestroySwapchainKHR(r_vk_ldevice()->h, swapchain->h, NULL);
+
+  // Push to the free list
+  SLLStackPush(r_vk_state->first_free_swapchain, swapchain);
 }
 
 internal void
@@ -739,9 +760,8 @@ r_vk_format_for_swapchain(VkSurfaceFormatKHR *formats, U64 count, VkFormat *form
   // For example, VK_FORMAT_B8G8R8A8_SRGB means that we store the B,G,G and alpha channels in that order with an 8 bit unsigned integer for a total 32 bits
   // per pixel. The colorSpcae member indicates if the SRGB color space is supported or no using the VK_COLOR_SPACE_NONLINEAR_KHR flag
   // Note that this flag used to be called VK_COLORSPACE_SRGB_NONLINEAR_KHR in old versions of the specification
-  Assert(count > 0);
-  *format = formats[0].format;
-  *color_space = formats[0].colorSpace;
+  if(format) *format = formats[0].format;
+  if(color_space) *color_space = formats[0].colorSpace;
   for(U64 i = 0; i < count; i++)
   {
     // For the color space, we'll use SRGB if it's available, because it results in more accurate perceived colors.
@@ -749,8 +769,8 @@ r_vk_format_for_swapchain(VkSurfaceFormatKHR *formats, U64 count, VkFormat *form
     // use an SRGB color format, of which one of the most common ones is VK_FORMAT_B8G8R8A8_SRGB
     if(formats[i].format == VK_FORMAT_B8G8R8A8_SRGB && formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
     {
-      *format = formats[i].format;
-      *color_space = formats[i].colorSpace;
+      if(format) *format = formats[i].format;
+      if(color_space) *color_space = formats[i].colorSpace;
       break;
     }
   }
@@ -970,219 +990,308 @@ r_vk_memory_map(R_VK_Memory *memory)
 
 //- UBO, SBO
 
-internal R_VK_UBOBuffer
-r_vk_ubo_buffer_alloc(R_VK_UBOTypeKind kind, U64 unit_count)
-{
-  R_VK_UBOBuffer ubo_buffer = {0};
-
-  U64 stride = 0;
-  switch(kind)
-  {
-    case R_VK_UBOTypeKind_Rect:
-    {
-      stride = AlignPow2(sizeof(R_VK_UBO_Rect), r_vk_pdevice()->properties.limits.minUniformBufferOffsetAlignment);
-    }break;
-    case R_VK_UBOTypeKind_Geo2D:
-    {
-      stride = AlignPow2(sizeof(R_VK_UBO_Geo2D), r_vk_pdevice()->properties.limits.minUniformBufferOffsetAlignment);
-    }break;
-    case R_VK_UBOTypeKind_Geo3D:
-    {
-      stride = AlignPow2(sizeof(R_VK_UBO_Geo3D), r_vk_pdevice()->properties.limits.minUniformBufferOffsetAlignment);
-    }break;
-    case R_VK_UBOTypeKind_Geo3D_TileFrustum:
-    {
-      stride = AlignPow2(sizeof(R_VK_UBO_Geo3D_TileFrustum), r_vk_pdevice()->properties.limits.minUniformBufferOffsetAlignment);
-    }break;
-    case R_VK_UBOTypeKind_Geo3D_LightCulling:
-    {
-      stride = AlignPow2(sizeof(R_VK_UBO_Geo3D_LightCulling), r_vk_pdevice()->properties.limits.minUniformBufferOffsetAlignment);
-    }break;
-    default:{InvalidPath;}break;
-  }
-
-  U64 buf_size = stride * unit_count;
-
-  ubo_buffer.unit_count  = unit_count;
-  ubo_buffer.stride      = stride;
-  ubo_buffer.buffer.size = buf_size;
-
-  VkBufferCreateInfo buf_ci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-  buf_ci.size = buf_size;
-  buf_ci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-  buf_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  // The flags parameter is used to configure sparse buffer memory
-  // Sparse buffers in Vulkan refer to a memory management technique that allows more flexible and efficient use of GPU memory
-  // This technique is particularly useful for handling large datasets, such as textures or vertex buffers, that might not fit contiguously in GPU
-  // memory or that require efficient streaming of data in and out of GPU memory
-  buf_ci.flags = 0;
-
-  VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &buf_ci, NULL, &ubo_buffer.buffer.h));
-  VkMemoryRequirements mem_requirements;
-  vkGetBufferMemoryRequirements(r_vk_ldevice()->h, ubo_buffer.buffer.h, &mem_requirements);
-
-  VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-  VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-  R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
-  VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, ubo_buffer.buffer.h, memory->h, memory->offset));
-  r_vk_memory_map(memory);
-  ubo_buffer.buffer.memory = memory;
-
-  // Create descriptor set
-  R_VK_DescriptorSetKind ds_type = 0;
-  switch(kind)
-  {
-    case R_VK_UBOTypeKind_Rect:               {ds_type = R_VK_DescriptorSetKind_UBO_Rect;}break;
-    case R_VK_UBOTypeKind_Geo2D:              {ds_type = R_VK_DescriptorSetKind_UBO_Geo2D;}break;
-    case R_VK_UBOTypeKind_Geo3D:              {ds_type = R_VK_DescriptorSetKind_UBO_Geo3D;}break;
-    case R_VK_UBOTypeKind_Geo3D_TileFrustum:  {ds_type = R_VK_DescriptorSetKind_UBO_Geo3D_TileFrustum;}break;
-    case R_VK_UBOTypeKind_Geo3D_LightCulling: {ds_type = R_VK_DescriptorSetKind_UBO_Geo3D_LightCulling;}break;
-    default:                                  {InvalidPath;}break;
-  }
-
-  // TODO(k): we should set cap based on something, right?
-  r_vk_descriptor_set_alloc(ds_type, 1, 3, &ubo_buffer.buffer.h, NULL, NULL, &ubo_buffer.set);
-  return ubo_buffer;
-}
-
-internal R_VK_SBOBuffer
-r_vk_sbo_buffer_alloc(R_VK_SBOTypeKind kind, U64 unit_count)
-{
-  R_VK_SBOBuffer ret = {0};
-  U64 stride = 0;
-
-  B32 device_local = 0;
-  B32 auto_mapped = 0;
-  VkBufferUsageFlags flags = 0;
-  // NOTE(k): we are expecting stride is equal to the size of the struct
-  switch(kind)
-  {
-    case R_VK_SBOTypeKind_Geo3D_Joints:
-    {
-      auto_mapped = 1;
-      U64 array_size = sizeof(R_VK_SBO_Geo3D_Joint) * R_MAX_JOINTS_PER_PASS;
-      stride = AlignPow2(array_size, r_vk_pdevice()->properties.limits.minStorageBufferOffsetAlignment);
-    }break;
-    case R_VK_SBOTypeKind_Geo3D_Materials:
-    {
-      auto_mapped = 1;
-      U64 array_size = sizeof(R_VK_SBO_Geo3D_Material) * R_MAX_MATERIALS_PER_PASS;
-      stride = AlignPow2(array_size, r_vk_pdevice()->properties.limits.minStorageBufferOffsetAlignment);
-    }break;
-    case R_VK_SBOTypeKind_Geo3D_Tiles:
-    {
-      device_local = 1;
-      U64 array_size = sizeof(R_VK_SBO_Geo3D_Tile) * R_VK_MAX_TILES_PER_PASS;
-      stride = AlignPow2(array_size, r_vk_pdevice()->properties.limits.minStorageBufferOffsetAlignment);
-    }break;
-    case R_VK_SBOTypeKind_Geo3D_Lights:
-    {
-      auto_mapped = 1;
-      U64 array_size = sizeof(R_VK_SBO_Geo3D_Light) * R_MAX_LIGHTS_PER_PASS;
-      stride = AlignPow2(array_size, r_vk_pdevice()->properties.limits.minStorageBufferOffsetAlignment);
-    }break;
-    case R_VK_SBOTypeKind_Geo3D_LightIndices:
-    {
-      device_local = 1;
-      // NOTE(k): we need to use vkFillBuffer to clear this buffer, hense this flag
-      flags |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-      U64 array_size = sizeof(R_VK_SBO_Geo3D_LightIndice) * R_VK_MAX_LIGHTS_PER_TILE * R_VK_MAX_TILES_PER_PASS;
-      stride = AlignPow2(array_size, r_vk_pdevice()->properties.limits.minStorageBufferOffsetAlignment);
-    }break;
-    case R_VK_SBOTypeKind_Geo3D_TileLights:
-    {
-      device_local = 1;
-      U64 array_size = sizeof(R_VK_SBO_Geo3D_TileLights) * R_VK_MAX_TILES_PER_PASS;
-      stride = AlignPow2(array_size, r_vk_pdevice()->properties.limits.minStorageBufferOffsetAlignment);
-    }break;
-    default:{InvalidPath;}break;
-  }
-
-  U64 buf_size = stride*unit_count;
-
-  ret.unit_count  = unit_count;
-  ret.stride      = stride;
-  ret.buffer.size = buf_size;
-
-  VkBufferCreateInfo buf_ci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-  buf_ci.size = buf_size;
-  buf_ci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|flags;
-  // Just like the images in the swapchain, buffers can also be owned by a specific queue family or be shared between multiple at the same time
-  // Our buffer will only be used from the graphics queue, so we an stick to exclusive access
-  buf_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  // The flags parameter is used to configure sparse buffer memory
-  // Sparse buffers in VUlkan refer to a memory management technique that allows more flexible and efficient use of GPU memory
-  // This technique is particularly useful for handling large datasets, such as textures or vertex buffers, that might not fit contiguously in GPU
-  // memory or that require efficient streaming of data in and out of GPU memory
-  buf_ci.flags = 0;
-
-  VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &buf_ci, NULL, &ret.buffer.h));
-  VkMemoryRequirements mem_requirements;
-  vkGetBufferMemoryRequirements(r_vk_ldevice()->h, ret.buffer.h, &mem_requirements);
-
-  VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-  VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-  R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
-  VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, ret.buffer.h, memory->h, memory->offset));
-  if(auto_mapped)
-  {
-    r_vk_memory_map(memory);
-  }
-  ret.buffer.memory = memory;
-
-  // Create descriptor set
-  R_VK_DescriptorSetKind ds_type = 0;
-  switch(kind)
-  {
-    case R_VK_SBOTypeKind_Geo3D_Joints:       {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_Joints;}break;
-    case R_VK_SBOTypeKind_Geo3D_Materials:    {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_Materials;}break;
-    case R_VK_SBOTypeKind_Geo3D_Tiles:        {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_Tiles;}break;
-    case R_VK_SBOTypeKind_Geo3D_Lights:       {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_Lights;}break;
-    case R_VK_SBOTypeKind_Geo3D_LightIndices: {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_LightIndices;}break;
-    case R_VK_SBOTypeKind_Geo3D_TileLights:   {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_TileLights;}break;
-    default:                                  {InvalidPath;}break;
-  }
-
-  r_vk_descriptor_set_alloc(ds_type, 1, 3, &ret.buffer.h, NULL, NULL, &ret.set);
-  return ret;
-}
+// internal R_VK_UBOBuffer
+// r_vk_ubo_buffer_alloc(R_VK_UBOTypeKind kind, U64 unit_count)
+// {
+//   R_VK_UBOBuffer ubo_buffer = {0};
+// 
+//   U64 stride = 0;
+//   switch(kind)
+//   {
+//     case R_VK_UBOTypeKind_Rect:
+//     {
+//       stride = AlignPow2(sizeof(R_VK_UBO_Rect), r_vk_pdevice()->properties.limits.minUniformBufferOffsetAlignment);
+//     }break;
+//     case R_VK_UBOTypeKind_Geo2D:
+//     {
+//       stride = AlignPow2(sizeof(R_VK_UBO_Geo2D), r_vk_pdevice()->properties.limits.minUniformBufferOffsetAlignment);
+//     }break;
+//     case R_VK_UBOTypeKind_Geo3D:
+//     {
+//       stride = AlignPow2(sizeof(R_VK_UBO_Geo3D), r_vk_pdevice()->properties.limits.minUniformBufferOffsetAlignment);
+//     }break;
+//     case R_VK_UBOTypeKind_Geo3D_TileFrustum:
+//     {
+//       stride = AlignPow2(sizeof(R_VK_UBO_Geo3D_TileFrustum), r_vk_pdevice()->properties.limits.minUniformBufferOffsetAlignment);
+//     }break;
+//     case R_VK_UBOTypeKind_Geo3D_LightCulling:
+//     {
+//       stride = AlignPow2(sizeof(R_VK_UBO_Geo3D_LightCulling), r_vk_pdevice()->properties.limits.minUniformBufferOffsetAlignment);
+//     }break;
+//     default:{InvalidPath;}break;
+//   }
+// 
+//   U64 buf_size = stride * unit_count;
+// 
+//   ubo_buffer.unit_count  = unit_count;
+//   ubo_buffer.stride      = stride;
+//   ubo_buffer.buffer.size = buf_size;
+// 
+//   VkBufferCreateInfo buf_ci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+//   buf_ci.size = buf_size;
+//   buf_ci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+//   buf_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+//   // The flags parameter is used to configure sparse buffer memory
+//   // Sparse buffers in Vulkan refer to a memory management technique that allows more flexible and efficient use of GPU memory
+//   // This technique is particularly useful for handling large datasets, such as textures or vertex buffers, that might not fit contiguously in GPU
+//   // memory or that require efficient streaming of data in and out of GPU memory
+//   buf_ci.flags = 0;
+// 
+//   VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &buf_ci, NULL, &ubo_buffer.buffer.h));
+//   VkMemoryRequirements mem_requirements;
+//   vkGetBufferMemoryRequirements(r_vk_ldevice()->h, ubo_buffer.buffer.h, &mem_requirements);
+// 
+//   VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+//   VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+//   R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
+//   VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, ubo_buffer.buffer.h, memory->h, memory->offset));
+//   r_vk_memory_map(memory);
+//   ubo_buffer.buffer.memory = memory;
+// 
+//   // Create descriptor set
+//   R_VK_DescriptorSetKind ds_type = 0;
+//   switch(kind)
+//   {
+//     case R_VK_UBOTypeKind_Rect:               {ds_type = R_VK_DescriptorSetKind_UBO_Rect;}break;
+//     case R_VK_UBOTypeKind_Geo2D:              {ds_type = R_VK_DescriptorSetKind_UBO_Geo2D;}break;
+//     case R_VK_UBOTypeKind_Geo3D:              {ds_type = R_VK_DescriptorSetKind_UBO_Geo3D;}break;
+//     case R_VK_UBOTypeKind_Geo3D_TileFrustum:  {ds_type = R_VK_DescriptorSetKind_UBO_Geo3D_TileFrustum;}break;
+//     case R_VK_UBOTypeKind_Geo3D_LightCulling: {ds_type = R_VK_DescriptorSetKind_UBO_Geo3D_LightCulling;}break;
+//     default:                                  {InvalidPath;}break;
+//   }
+// 
+//   // TODO(k): we should set cap based on something, right?
+//   r_vk_descriptor_set_alloc(ds_type, 1, 3, &ubo_buffer.buffer.h, NULL, NULL, &ubo_buffer.set);
+//   return ubo_buffer;
+// }
+// 
+// internal R_VK_SBOBuffer
+// r_vk_sbo_buffer_alloc(R_VK_SBOTypeKind kind, U64 unit_count)
+// {
+//   R_VK_SBOBuffer ret = {0};
+//   U64 stride = 0;
+// 
+//   B32 device_local = 0;
+//   B32 auto_mapped = 0;
+//   VkBufferUsageFlags flags = 0;
+//   // NOTE(k): we are expecting stride is equal to the size of the struct
+//   switch(kind)
+//   {
+//     case R_VK_SBOTypeKind_Geo3D_Joints:
+//     {
+//       auto_mapped = 1;
+//       U64 array_size = sizeof(R_VK_SBO_Geo3D_Joint) * R_MAX_JOINTS_PER_PASS;
+//       stride = AlignPow2(array_size, r_vk_pdevice()->properties.limits.minStorageBufferOffsetAlignment);
+//     }break;
+//     case R_VK_SBOTypeKind_Geo3D_Materials:
+//     {
+//       auto_mapped = 1;
+//       U64 array_size = sizeof(R_VK_SBO_Geo3D_Material) * R_MAX_MATERIALS_PER_PASS;
+//       stride = AlignPow2(array_size, r_vk_pdevice()->properties.limits.minStorageBufferOffsetAlignment);
+//     }break;
+//     case R_VK_SBOTypeKind_Geo3D_Tiles:
+//     {
+//       device_local = 1;
+//       U64 array_size = sizeof(R_VK_SBO_Geo3D_Tile) * R_VK_MAX_TILES_PER_PASS;
+//       stride = AlignPow2(array_size, r_vk_pdevice()->properties.limits.minStorageBufferOffsetAlignment);
+//     }break;
+//     case R_VK_SBOTypeKind_Geo3D_Lights:
+//     {
+//       auto_mapped = 1;
+//       U64 array_size = sizeof(R_VK_SBO_Geo3D_Light) * R_MAX_LIGHTS_PER_PASS;
+//       stride = AlignPow2(array_size, r_vk_pdevice()->properties.limits.minStorageBufferOffsetAlignment);
+//     }break;
+//     case R_VK_SBOTypeKind_Geo3D_LightIndices:
+//     {
+//       device_local = 1;
+//       // NOTE(k): we need to use vkFillBuffer to clear this buffer, hense this flag
+//       flags |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+//       U64 array_size = sizeof(R_VK_SBO_Geo3D_LightIndice) * R_VK_MAX_LIGHTS_PER_TILE * R_VK_MAX_TILES_PER_PASS;
+//       stride = AlignPow2(array_size, r_vk_pdevice()->properties.limits.minStorageBufferOffsetAlignment);
+//     }break;
+//     case R_VK_SBOTypeKind_Geo3D_TileLights:
+//     {
+//       device_local = 1;
+//       U64 array_size = sizeof(R_VK_SBO_Geo3D_TileLights) * R_VK_MAX_TILES_PER_PASS;
+//       stride = AlignPow2(array_size, r_vk_pdevice()->properties.limits.minStorageBufferOffsetAlignment);
+//     }break;
+//     default:{InvalidPath;}break;
+//   }
+// 
+//   U64 buf_size = stride*unit_count;
+// 
+//   ret.unit_count  = unit_count;
+//   ret.stride      = stride;
+//   ret.buffer.size = buf_size;
+// 
+//   VkBufferCreateInfo buf_ci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+//   buf_ci.size = buf_size;
+//   buf_ci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|flags;
+//   // Just like the images in the swapchain, buffers can also be owned by a specific queue family or be shared between multiple at the same time
+//   // Our buffer will only be used from the graphics queue, so we an stick to exclusive access
+//   buf_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+//   // The flags parameter is used to configure sparse buffer memory
+//   // Sparse buffers in VUlkan refer to a memory management technique that allows more flexible and efficient use of GPU memory
+//   // This technique is particularly useful for handling large datasets, such as textures or vertex buffers, that might not fit contiguously in GPU
+//   // memory or that require efficient streaming of data in and out of GPU memory
+//   buf_ci.flags = 0;
+// 
+//   VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &buf_ci, NULL, &ret.buffer.h));
+//   VkMemoryRequirements mem_requirements;
+//   vkGetBufferMemoryRequirements(r_vk_ldevice()->h, ret.buffer.h, &mem_requirements);
+// 
+//   VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+//   VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+//   R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
+//   VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, ret.buffer.h, memory->h, memory->offset));
+//   if(auto_mapped)
+//   {
+//     r_vk_memory_map(memory);
+//   }
+//   ret.buffer.memory = memory;
+// 
+//   // Create descriptor set
+//   R_VK_DescriptorSetKind ds_type = 0;
+//   switch(kind)
+//   {
+//     case R_VK_SBOTypeKind_Geo3D_Joints:       {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_Joints;}break;
+//     case R_VK_SBOTypeKind_Geo3D_Materials:    {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_Materials;}break;
+//     case R_VK_SBOTypeKind_Geo3D_Tiles:        {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_Tiles;}break;
+//     case R_VK_SBOTypeKind_Geo3D_Lights:       {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_Lights;}break;
+//     case R_VK_SBOTypeKind_Geo3D_LightIndices: {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_LightIndices;}break;
+//     case R_VK_SBOTypeKind_Geo3D_TileLights:   {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_TileLights;}break;
+//     default:                                  {InvalidPath;}break;
+//   }
+// 
+//   r_vk_descriptor_set_alloc(ds_type, 1, 3, &ret.buffer.h, NULL, NULL, &ret.set);
+//   return ret;
+// }
 
 internal R_VK_Buffer *
-r_vk_stage_buffer_from_size(U64 size)
+r_vk_buffer_from_pool(R_VK_BufferPoolKind kind, U64 size)
 {
-  R_VK_Buffer *ret = r_vk_state->first_free_buffer;
-  if(ret == 0)
+  R_VK_Buffer *ret = 0;
+
+  // Find the best fit chunk size idx
+  S32 best_fit_chunk_size_idx = -1;
+  for(U64 i = 0; i < ArrayCount(r_vk_buffer_chunk_sizes); ++i)
   {
-    ret = push_array(r_vk_state->arena, R_VK_Buffer, 1);
+    U64 chunk_size = r_vk_buffer_chunk_sizes[i];
+    if(chunk_size >= size)
+    {
+      best_fit_chunk_size_idx = i;
+      break;
+    }
   }
-  else
+
+  R_VK_BufferPool *pool = &r_vk_state->buffer_pools[kind];
+  R_VK_BufferPoolSlot *slot = best_fit_chunk_size_idx >= 0 ? &pool->slots[best_fit_chunk_size_idx] : 0;
+  if(slot)
   {
-    U64 gen = ret->generation;
-    SLLStackPop(r_vk_state->first_free_buffer);
-    MemoryZeroStruct(ret);
-    ret->generation = gen;
+    ret = slot->first_buffer;
+
+    // No more free buffer? -> alloc a new one
+    if(ret == 0)
+    {
+      ret = r_vk_state->first_free_buffer;
+      if(ret == 0)
+      {
+        ret = push_array(r_vk_state->arena, R_VK_Buffer, 1);
+      }
+      else
+      {
+        U64 gen = ret->generation;
+        SLLStackPop(r_vk_state->first_free_buffer);
+        MemoryZeroStruct(ret);
+        ret->generation = gen;
+      }
+
+      VkBuffer buffer;
+      U64 buffer_size;
+      R_VK_Memory *memory = 0;
+      R_VK_DescriptorSet desc_set;
+
+      switch(kind)
+      {
+        case R_VK_BufferPoolKind_Instance:
+        {
+          VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+          bci.size = size;
+          bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+          bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+          VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &bci, NULL, &buffer));
+
+          VkMemoryRequirements mem_requirements;
+          vkGetBufferMemoryRequirements(r_vk_ldevice()->h, buffer, &mem_requirements);
+
+          buffer_size = mem_requirements.size;
+
+          VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+          VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+          memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
+          VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, buffer, memory->h, memory->offset));
+          r_vk_memory_map(memory);
+        }break;
+        case R_VK_BufferPoolKind_UBO:
+        {
+          VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+          bci.size = size;
+          bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+          bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+          VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &bci, NULL, &buffer));
+
+          VkMemoryRequirements mem_requirements;
+          vkGetBufferMemoryRequirements(r_vk_ldevice()->h, buffer, &mem_requirements);
+
+          buffer_size = mem_requirements.size;
+
+          VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+          VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+          memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
+          VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, buffer, memory->h, memory->offset));
+          r_vk_memory_map(memory);
+          r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind_UBO_Rect, 1, 4, &buffer, NULL, NULL, &desc_set);
+        }break;
+        case R_VK_BufferPoolKind_Scratch:
+        {
+          VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+          bci.size = size;
+          bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+          bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+          VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &bci, NULL, &buffer));
+
+          VkMemoryRequirements mem_requirements;
+          vkGetBufferMemoryRequirements(r_vk_ldevice()->h, buffer, &mem_requirements);
+
+          VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+          VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+          memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
+          VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, buffer, memory->h, memory->offset));
+          r_vk_memory_map(memory);
+        }break;
+        default:{InvalidPath;}break;
+      }
+
+      // Fill buffer info
+      ret->pool_slot = slot;
+      ret->h = buffer;
+      ret->memory = memory;
+      ret->size = buffer_size;
+      ret->desc_set = desc_set;
+    }
+    else
+    {
+      SLLStackPop(slot->first_buffer);
+    }
   }
 
-  VkBuffer buffer;
-  VkBufferCreateInfo create_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-  create_info.size = size;
-  create_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-  create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &create_info, NULL, &buffer));
-
-  VkMemoryRequirements mem_requirements;
-  vkGetBufferMemoryRequirements(r_vk_ldevice()->h, buffer, &mem_requirements);
-  VkMemoryPropertyFlags preferred = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-  VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-  R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
-  VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, buffer, memory->h, memory->offset));
-  r_vk_memory_map(memory);
-
-  ret->h = buffer;
-  ret->memory = memory;
-  ret->kind = R_ResourceKind_Stream;
-  ret->size = size;
   return ret;
+}
+
+internal void
+r_vk_buffer_release_to_pool(R_VK_Buffer *buffer)
+{
+  SLLStackPush(buffer->pool_slot->first_buffer, buffer);
 }
 
 internal void
@@ -1195,39 +1304,22 @@ r_vk_buffer_release(R_VK_Buffer *buffer)
   buffer->generation++;
 }
 
-//- render targets
+//- render target set
 
-internal R_VK_RenderTargets *
-r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTargets *old)
+internal R_VK_RenderTargetSet *
+r_vk_render_target_set_alloc(OS_Handle os_wnd, R_VK_Surface *surface, VkExtent2D swapchain_extent)
 {
-  // FIXME: clean up this mess
-  R_VK_RenderTargets *ret = r_vk_state->first_free_render_targets;
-  R_VK_Swapchain *old_swapchain = 0;
-
+  R_VK_RenderTargetSet *ret = r_vk_state->first_free_rt_set;
   if(ret == 0)
   {
-    ret = push_array_no_zero(r_vk_state->arena, R_VK_RenderTargets, 1);
+    ret = push_array_no_zero(r_vk_state->arena, R_VK_RenderTargetSet, 1);
   }
   else
   {
-    SLLStackPop(r_vk_state->first_free_render_targets);
+    SLLStackPop(r_vk_state->first_free_rt_set);
   }
   MemoryZeroStruct(ret);
 
-  if(old != 0)
-  {
-    old_swapchain = &old->swapchain;
-  }
-
-  // Query format and color space
-  VkFormat swp_format;
-  VkColorSpaceKHR swp_color_space;
-  r_vk_format_for_swapchain(surface->formats, surface->format_count, &swp_format, &swp_color_space);
-
-  // Create swapchain
-  ret->swapchain = r_vk_swapchain(surface, os_wnd, swp_format, swp_color_space, old_swapchain);
-
-  R_VK_Swapchain *swapchain                 = &ret->swapchain;
   R_VK_Image *stage_color_image             = &ret->stage_color_image;
   R_VK_DescriptorSet *stage_color_dss       = ret->stage_color_dss;
   R_VK_DescriptorSet *stage_color_ds        = &ret->stage_color_ds;
@@ -1250,8 +1342,8 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
   // Create stage color image and its sampler descriptor set
   {
     stage_color_image->format         = VK_FORMAT_R16G16B16A16_SFLOAT;
-    stage_color_image->extent.width   = swapchain->extent.width;
-    stage_color_image->extent.height  = swapchain->extent.height;
+    stage_color_image->extent.width   = swapchain_extent.width;
+    stage_color_image->extent.height  = swapchain_extent.height;
 
     VkImageCreateInfo create_info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
     create_info.imageType         = VK_IMAGE_TYPE_2D;
@@ -1316,8 +1408,8 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
   // stage_id color image
   {
     stage_id_image->format        = VK_FORMAT_R32G32B32A32_SFLOAT;
-    stage_id_image->extent.width  = swapchain->extent.width;
-    stage_id_image->extent.height = swapchain->extent.height;
+    stage_id_image->extent.width  = swapchain_extent.width;
+    stage_id_image->extent.height = swapchain_extent.height;
 
     VkImageCreateInfo create_info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
     create_info.imageType         = VK_IMAGE_TYPE_2D;
@@ -1386,13 +1478,12 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
   // edge image and its sampler descriptor set
   {
     VkFormat format = VK_FORMAT_R32G32B32A32_SFLOAT;
-    VkExtent2D extent = swapchain->extent;
     VkImage image_handle = {0};
 
     VkImageCreateInfo create_info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
     create_info.imageType     = VK_IMAGE_TYPE_2D;
-    create_info.extent.width  = extent.width;
-    create_info.extent.height = extent.height;
+    create_info.extent.width  = swapchain_extent.width;
+    create_info.extent.height = swapchain_extent.height;
     create_info.extent.depth  = 1;
     create_info.mipLevels     = 1;
     create_info.arrayLayers   = 1;
@@ -1435,7 +1526,7 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
     // copy values
     edge_image->h = image_handle;
     edge_image->format = format;
-    edge_image->extent = extent;
+    edge_image->extent = swapchain_extent;
     edge_image->memory = memory;
     edge_image->view = image_view;
     *edge_ds = ds;
@@ -1444,8 +1535,8 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
   // geo2d color image and its sampler descriptor set
   {
     geo2d_color_image->format        = VK_FORMAT_R16G16B16A16_SFLOAT;
-    geo2d_color_image->extent.width  = swapchain->extent.width;
-    geo2d_color_image->extent.height = swapchain->extent.height;
+    geo2d_color_image->extent.width  = swapchain_extent.width;
+    geo2d_color_image->extent.height = swapchain_extent.height;
 
     ////////////////////////////////
     // Create image
@@ -1505,12 +1596,11 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
     R_VK_Image *image = scratch_color_image;
     R_VK_DescriptorSet *ds = scratch_color_ds;
     VkFormat format = VK_FORMAT_R16G16B16A16_SFLOAT;
-    VkExtent2D extent = swapchain->extent;
 
     VkImageCreateInfo create_info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
     create_info.imageType         = VK_IMAGE_TYPE_2D;
-    create_info.extent.width      = extent.width;
-    create_info.extent.height     = extent.height;
+    create_info.extent.width      = swapchain_extent.width;
+    create_info.extent.height     = swapchain_extent.height;
     create_info.extent.depth      = 1;
     create_info.mipLevels         = 1;
     create_info.arrayLayers       = 1;
@@ -1557,14 +1647,14 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
                               &r_vk_state->samplers[R_Tex2DSampleKind_Nearest],
                               ds);
     image->format = format;
-    image->extent = extent;
+    image->extent = swapchain_extent;
   }
 
   // geo3d color image and its sampler descriptor set
   {
     geo3d_color_image->format        = VK_FORMAT_R16G16B16A16_SFLOAT;
-    geo3d_color_image->extent.width  = swapchain->extent.width;
-    geo3d_color_image->extent.height = swapchain->extent.height;
+    geo3d_color_image->extent.width  = swapchain_extent.width;
+    geo3d_color_image->extent.height = swapchain_extent.height;
 
     ////////////////////////////////
     // Create image
@@ -1622,8 +1712,8 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
   // create geo3d_normal_depth_image and its sampler descriptor set
   {
     geo3d_normal_depth_image->format        = VK_FORMAT_R32G32B32A32_SFLOAT; // first 3 is normal, last w is depth
-    geo3d_normal_depth_image->extent.width  = swapchain->extent.width;
-    geo3d_normal_depth_image->extent.height = swapchain->extent.height;
+    geo3d_normal_depth_image->extent.width  = swapchain_extent.width;
+    geo3d_normal_depth_image->extent.height = swapchain_extent.height;
 
     ////////////////////////////////
     // Create image
@@ -1682,8 +1772,8 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
   // create geo3d_depth_image
   {
     geo3d_depth_image->format        = r_vk_pdevice()->depth_image_format;
-    geo3d_depth_image->extent.width  = swapchain->extent.width;
-    geo3d_depth_image->extent.height = swapchain->extent.height;
+    geo3d_depth_image->extent.width  = swapchain_extent.width;
+    geo3d_depth_image->extent.height = swapchain_extent.height;
 
     VkImageCreateInfo create_info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
     // Tells Vulkan with what kind of coordinate system the texels in the image are going to be addressed
@@ -1769,8 +1859,8 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
   // Create geo3d_pre_depth_image (for z pre pass)
   {
     geo3d_pre_depth_image->format        = r_vk_pdevice()->depth_image_format;
-    geo3d_pre_depth_image->extent.width  = swapchain->extent.width;
-    geo3d_pre_depth_image->extent.height = swapchain->extent.height;
+    geo3d_pre_depth_image->extent.width  = swapchain_extent.width;
+    geo3d_pre_depth_image->extent.height = swapchain_extent.height;
 
     VkImageCreateInfo create_info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
     create_info.imageType     = VK_IMAGE_TYPE_2D;
@@ -1826,93 +1916,85 @@ r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTa
 }
 
 internal void
-r_vk_render_targets_destroy(R_VK_RenderTargets *render_targets)
+r_vk_render_target_set_destroy(R_VK_RenderTargetSet *rt_set)
 {
-  // FIXME: cleanup this mess
-
-  // destroy swapchain
-  for(U64 i = 0; i < render_targets->swapchain.image_count; i++)
-  {
-    vkDestroyImageView(r_vk_ldevice()->h, render_targets->swapchain.image_views[i], NULL);
-
-    // TODO(XXX): we should be able to reuse these semaphores
-    // TODO(BUG): it's not safe to destroy semaphore here, fix it later
-    //            can't be called on VkSemaphore 0x4a000000004a that is currently in use by VkQueue
-    vkDestroySemaphore(r_vk_ldevice()->h, render_targets->swapchain.submit_semaphores[i], NULL);
-  }
-  vkDestroySwapchainKHR(r_vk_ldevice()->h, render_targets->swapchain.h, NULL);
-
   // stage color image
   for(U64 i = 0; i < 6; ++i)
   {
-    vkDestroyImageView(r_vk_ldevice()->h, render_targets->stage_color_image.views[i], NULL);
+    vkDestroyImageView(r_vk_ldevice()->h, rt_set->stage_color_image.views[i], NULL);
   }
-  vkDestroyImage(r_vk_ldevice()->h, render_targets->stage_color_image.h, NULL);
+  vkDestroyImage(r_vk_ldevice()->h, rt_set->stage_color_image.h, NULL);
   for(U64 i = 0; i < 6; ++i)
   {
-    r_vk_descriptor_set_destroy(&render_targets->stage_color_dss[i]);
+    r_vk_descriptor_set_release(&rt_set->stage_color_dss[i]);
   }
-  r_vk_descriptor_set_destroy(&render_targets->stage_color_ds);
-  r_vk_memory_release(render_targets->stage_color_image.memory);
+  r_vk_descriptor_set_release(&rt_set->stage_color_ds);
+  r_vk_memory_release(rt_set->stage_color_image.memory);
 
   // stage id image
-  vkDestroyImageView(r_vk_ldevice()->h, render_targets->stage_id_image.view, NULL);
-  vkDestroyImage(r_vk_ldevice()->h, render_targets->stage_id_image.h, NULL);
-  r_vk_memory_release(render_targets->stage_id_image.memory);
+  vkDestroyImageView(r_vk_ldevice()->h, rt_set->stage_id_image.view, NULL);
+  vkDestroyImage(r_vk_ldevice()->h, rt_set->stage_id_image.h, NULL);
+  r_vk_memory_release(rt_set->stage_id_image.memory);
 
   // Scratch color image
-  vkDestroyImageView(r_vk_ldevice()->h, render_targets->scratch_color_image.view, NULL);
-  vkDestroyImage(r_vk_ldevice()->h, render_targets->scratch_color_image.h, NULL);
-  r_vk_descriptor_set_destroy(&render_targets->scratch_color_ds);
-  r_vk_memory_release(render_targets->scratch_color_image.memory);
+  vkDestroyImageView(r_vk_ldevice()->h, rt_set->scratch_color_image.view, NULL);
+  vkDestroyImage(r_vk_ldevice()->h, rt_set->scratch_color_image.h, NULL);
+  r_vk_descriptor_set_release(&rt_set->scratch_color_ds);
+  r_vk_memory_release(rt_set->scratch_color_image.memory);
 
   // stage id buffer (cpu)
-  // vkUnmapMemory(r_vk_ldevice()->h, render_targets->stage_id_cpu.memory);
-  vkDestroyBuffer(r_vk_ldevice()->h, render_targets->stage_id_cpu.h, NULL);
-  r_vk_memory_release(render_targets->stage_id_cpu.memory);
+  // vkUnmapMemory(r_vk_ldevice()->h, rt_set->stage_id_cpu.memory);
+  vkDestroyBuffer(r_vk_ldevice()->h, rt_set->stage_id_cpu.h, NULL);
+  r_vk_memory_release(rt_set->stage_id_cpu.memory);
 
   // edge image
-  vkDestroyImageView(r_vk_ldevice()->h, render_targets->edge_image.view, NULL);
-  vkDestroyImage(r_vk_ldevice()->h, render_targets->edge_image.h, NULL);
-  r_vk_descriptor_set_destroy(&render_targets->edge_ds);
-  r_vk_memory_release(render_targets->edge_image.memory);
+  vkDestroyImageView(r_vk_ldevice()->h, rt_set->edge_image.view, NULL);
+  vkDestroyImage(r_vk_ldevice()->h, rt_set->edge_image.h, NULL);
+  r_vk_descriptor_set_release(&rt_set->edge_ds);
+  r_vk_memory_release(rt_set->edge_image.memory);
 
   // geo2d color image
-  vkDestroyImageView(r_vk_ldevice()->h, render_targets->geo2d_color_image.view, NULL);
-  vkDestroyImage(r_vk_ldevice()->h, render_targets->geo2d_color_image.h, NULL);
-  r_vk_descriptor_set_destroy(&render_targets->geo2d_color_ds);
+  vkDestroyImageView(r_vk_ldevice()->h, rt_set->geo2d_color_image.view, NULL);
+  vkDestroyImage(r_vk_ldevice()->h, rt_set->geo2d_color_image.h, NULL);
+  r_vk_descriptor_set_release(&rt_set->geo2d_color_ds);
   // FIXME: replace it with r_vk_memory_release
-  r_vk_memory_release(render_targets->geo2d_color_image.memory);
+  r_vk_memory_release(rt_set->geo2d_color_image.memory);
 
   // geo3d color image
-  vkDestroyImageView(r_vk_ldevice()->h, render_targets->geo3d_color_image.view, NULL);
-  vkDestroyImage(r_vk_ldevice()->h, render_targets->geo3d_color_image.h, NULL);
-  r_vk_descriptor_set_destroy(&render_targets->geo3d_color_ds);
-  r_vk_memory_release(render_targets->geo3d_color_image.memory);
+  vkDestroyImageView(r_vk_ldevice()->h, rt_set->geo3d_color_image.view, NULL);
+  vkDestroyImage(r_vk_ldevice()->h, rt_set->geo3d_color_image.h, NULL);
+  r_vk_descriptor_set_release(&rt_set->geo3d_color_ds);
+  r_vk_memory_release(rt_set->geo3d_color_image.memory);
 
   // geo3d normal depth image
-  vkDestroyImageView(r_vk_ldevice()->h, render_targets->geo3d_normal_depth_image.view, NULL);
-  vkDestroyImage(r_vk_ldevice()->h, render_targets->geo3d_normal_depth_image.h, NULL);
-  r_vk_descriptor_set_destroy(&render_targets->geo3d_normal_depth_ds);
-  r_vk_memory_release(render_targets->geo3d_normal_depth_image.memory);
+  vkDestroyImageView(r_vk_ldevice()->h, rt_set->geo3d_normal_depth_image.view, NULL);
+  vkDestroyImage(r_vk_ldevice()->h, rt_set->geo3d_normal_depth_image.h, NULL);
+  r_vk_descriptor_set_release(&rt_set->geo3d_normal_depth_ds);
+  r_vk_memory_release(rt_set->geo3d_normal_depth_image.memory);
 
   // geo3d depth image
-  vkDestroyImageView(r_vk_ldevice()->h, render_targets->geo3d_depth_image.view, NULL);
-  vkDestroyImage(r_vk_ldevice()->h, render_targets->geo3d_depth_image.h, NULL);
-  r_vk_memory_release(render_targets->geo3d_depth_image.memory);
+  vkDestroyImageView(r_vk_ldevice()->h, rt_set->geo3d_depth_image.view, NULL);
+  vkDestroyImage(r_vk_ldevice()->h, rt_set->geo3d_depth_image.h, NULL);
+  r_vk_memory_release(rt_set->geo3d_depth_image.memory);
 
   // geo3d_pre_depth_image
-  vkDestroyImageView(r_vk_ldevice()->h, render_targets->geo3d_pre_depth_image.view, NULL);
-  vkDestroyImage(r_vk_ldevice()->h, render_targets->geo3d_pre_depth_image.h, NULL);
-  r_vk_descriptor_set_destroy(&render_targets->geo3d_pre_depth_ds);
-  r_vk_memory_release(render_targets->geo3d_pre_depth_image.memory);
+  vkDestroyImageView(r_vk_ldevice()->h, rt_set->geo3d_pre_depth_image.view, NULL);
+  vkDestroyImage(r_vk_ldevice()->h, rt_set->geo3d_pre_depth_image.h, NULL);
+  r_vk_descriptor_set_release(&rt_set->geo3d_pre_depth_ds);
+  r_vk_memory_release(rt_set->geo3d_pre_depth_image.memory);
+
+  // Push to the free-list
+  SLLStackPush(r_vk_state->first_free_rt_set, rt_set);
 }
 
 //- descriptor
 
 // TODO(k): ugly, split into alloc and update
 internal void
-r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind kind, U64 set_count, U64 cap, VkBuffer *buffers, VkImageView *image_views, VkSampler *samplers, R_VK_DescriptorSet *sets)
+r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind kind,
+                          U64 set_count, U64 cap,
+                          VkBuffer *buffers, VkImageView *image_views,
+                          VkSampler *samplers, R_VK_DescriptorSet *sets)
 {
   ProfBeginFunction();
   Temp scratch = scratch_begin(0,0);
@@ -2221,7 +2303,7 @@ r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind kind, U64 set_count, U64 cap, V
 }
 
 internal void
-r_vk_descriptor_set_destroy(R_VK_DescriptorSet *set)
+r_vk_descriptor_set_release(R_VK_DescriptorSet *set)
 {
   VK_Assert(vkFreeDescriptorSets(r_vk_ldevice()->h, set->pool->h, 1, &set->h));
   set->pool->cmt -= 1;
@@ -4315,6 +4397,9 @@ r_init(OS_Handle window, B32 debug)
     r_vk_state->physical_device = dst;
   }
 
+  R_VK_Surface surface = {vk_surface};
+  r_vk_surface_update(&surface);
+
   ////////////////////////////////
   //~ Queue families information
 
@@ -4534,15 +4619,6 @@ r_init(OS_Handle window, B32 debug)
     // Each command pool can only allocate command buffers that are submitted on a single type of queue
     // We're going to record commands for drawing, which is why we've chosen the graphcis queue family
     VK_Assert(vkCreateCommandPool(r_vk_ldevice()->h, &create_info, NULL, &r_vk_state->cmd_pool));
-
-    VkCommandBufferAllocateInfo alloc_info = {
-      .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-      .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-      .commandPool        = r_vk_state->cmd_pool,
-      .commandBufferCount = 1,
-    };
-
-    VK_Assert(vkAllocateCommandBuffers(r_vk_ldevice()->h, &alloc_info, &r_vk_state->oneshot_cmd_buf));
   }
 
   // Create texture samplers
@@ -4868,8 +4944,82 @@ r_init(OS_Handle window, B32 debug)
     VK_Assert(vkCreateDescriptorSetLayout(r_vk_ldevice()->h, &create_info, NULL, &set_layout->h));
   }
 
-  // init stage state
-  r_vk_stage_init();
+  ////////////////////////////////
+  // ~ Pipeline Set
+
+  {
+    // Query swapchain format so we can create pipeline
+    VkFormat swapchain_format;
+    r_vk_format_for_swapchain(surface.formats, surface.format_count, &swapchain_format, 0);
+
+    // rect
+    r_vk_state->pipeline_set.rect = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Rect, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, swapchain_format, 0);
+
+    // blur
+
+    // noise
+    r_vk_state->pipeline_set.noise = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Noise, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, swapchain_format, 0);
+
+    // edge
+    r_vk_state->pipeline_set.edge = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Edge, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, swapchain_format, 0);
+
+    // crt
+    r_vk_state->pipeline_set.crt = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Crt, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, swapchain_format, 0);
+
+    // bloom
+    r_vk_state->pipeline_set.bloom_down = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_BloomDown, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, swapchain_format, 0);
+    r_vk_state->pipeline_set.bloom_up = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_BloomUp, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, swapchain_format, 0);
+
+    // geo2d
+    for(U64 i = 0; i < R_GeoTopologyKind_COUNT; i++)
+    {
+      for(U64 j = 0; j < R_GeoPolygonKind_COUNT; j++)
+      {
+        r_vk_state->pipeline_set.geo2d.forward[i*R_GeoPolygonKind_COUNT + j] = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Geo2D_Forward, i, j, swapchain_format, 0);
+      }
+    }
+    r_vk_state->pipeline_set.composite = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Composite, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, swapchain_format, 0);
+    r_vk_state->pipeline_set.composite_additive = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_CompositeAdditive, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, swapchain_format, 0);
+
+    // geo3d
+    r_vk_state->pipeline_set.geo3d.tile_frustum = r_vk_cmp_pipeline(R_VK_PipelineKind_CMP_Geo3D_TileFrustum);
+    r_vk_state->pipeline_set.geo3d.light_culling = r_vk_cmp_pipeline(R_VK_PipelineKind_CMP_Geo3D_LightCulling);
+    for(U64 i = 0; i < R_GeoTopologyKind_COUNT; i++)
+    {
+      for(U64 j = 0; j < R_GeoPolygonKind_COUNT; j++)
+      {
+        r_vk_state->pipeline_set.geo3d.z_pre[i*R_GeoPolygonKind_COUNT + j] = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Geo3D_ZPre, i, j, swapchain_format, 0);
+        r_vk_state->pipeline_set.geo3d.debug[i*R_GeoPolygonKind_COUNT + j] = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Geo3D_Debug, i, j, swapchain_format, 0);
+        r_vk_state->pipeline_set.geo3d.forward[i*R_GeoPolygonKind_COUNT + j] = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Geo3D_Forward, i, j, swapchain_format, 0);
+      }
+    }
+    r_vk_state->pipeline_set.geo3d.composite = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Geo3D_Composite, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, swapchain_format, 0);
+
+    // finalize
+    r_vk_state->pipeline_set.finalize = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Finalize, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, swapchain_format, 0);
+  }
+
+  ////////////////////////////////
+  //~ Setup Frames
+
+  {
+    VkCommandBuffer command_buffers[R_VK_MAX_FRAMES_IN_FLIGHT];
+    {
+      VkCommandBufferAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+      alloc_info.commandPool = r_vk_state->cmd_pool;
+      alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+      alloc_info.commandBufferCount = R_VK_MAX_FRAMES_IN_FLIGHT;
+      VK_Assert(vkAllocateCommandBuffers(r_vk_ldevice()->h, &alloc_info, command_buffers));
+    }
+    for(U64 i = 0; i < R_VK_MAX_FRAMES_IN_FLIGHT; ++i)
+    {
+      r_vk_state->frames[i].inflt_fence = r_vk_fence();
+      r_vk_state->frames[i].cmd_buffer = command_buffers[i];
+    }
+  }
+
+  ////////////////////////////////
+  //~ Finish up
 
   // create backup/default texture
   U32 backup_texture_data[] = {
@@ -4902,19 +5052,23 @@ r_window_equip(OS_Handle os_wnd)
     ret->generation = gen;
   }
 
-  // create surface
+  // Create surface
   R_VK_Surface surface = {0};
   surface.h = os_vulkan_surface_from_window(os_wnd, r_vk_state->instance);
   r_vk_surface_update(&surface);
 
-  // create render targets
-  R_VK_RenderTargets *render_targets = r_vk_render_targets_alloc(os_wnd, &surface, 0);
+  // Query format and color space for swapchain
+  VkFormat swapchain_format;
+  VkColorSpaceKHR swapchain_color_space;
+  r_vk_format_for_swapchain(surface.formats, surface.format_count, &swapchain_format, &swapchain_color_space);
 
-  // create frames
+  // Create Swapchain
+  R_VK_Swapchain *swapchain = r_vk_swapchain_alloc(&surface, os_wnd, swapchain_format, swapchain_color_space, 0);
+
+  // Create CommandBuffers
+  // Command buffers will be automatically freed when their command pool is destroyed, so we don't need explicit cleanup
+  VkCommandBuffer command_buffers[R_VK_MAX_FRAMES_IN_FLIGHT];
   {
-    // Command buffers will be automatically freed when their command pool is destroyed, so we don't need explicit cleanup
-    // Command buffers are allocated with the vkAllocateCommandBuffers function which takes a VkCommandBufferAllocateInfo struct as parameter that specifies the command pool and number of buffers to allcoate
-    VkCommandBuffer command_buffers[R_VK_MAX_FRAMES_IN_FLIGHT];
     VkCommandBufferAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
     alloc_info.commandPool = r_vk_state->cmd_pool;
     // The level parameter specifies if the allcoated command buffers are primary or secondary command buffers
@@ -4923,187 +5077,24 @@ r_window_equip(OS_Handle os_wnd)
     alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     alloc_info.commandBufferCount = R_VK_MAX_FRAMES_IN_FLIGHT;
     VK_Assert(vkAllocateCommandBuffers(r_vk_ldevice()->h, &alloc_info, command_buffers));
-
-    for(U64 i = 0; i < R_VK_MAX_FRAMES_IN_FLIGHT; i++)
-    {
-      ret->frames[i].cmd_buf = command_buffers[i];
-
-      // Create the synchronization objects for frames
-
-      // One semaphore to signal that an image has been acquired from the swapchain and is ready for rendering
-      // Another one to signal that rendering has finished and presentation can happen
-      // One fence to make sure only one frame is rendering at a time
-      ret->frames[i].img_acq_sem = r_vk_semaphore(r_vk_ldevice()->h);
-      ret->frames[i].inflt_fence = r_vk_fence();
-
-      // Create all uniform buffers
-      for(U64 kind = 0; kind < R_VK_UBOTypeKind_COUNT; kind++)
-      {
-        U64 unit_count;
-        switch(kind)
-        {
-          default:                                  {InvalidPath;}break;
-          case R_VK_UBOTypeKind_Rect:               {unit_count = R_MAX_RECT_PASS*R_MAX_RECT_GROUPS;}break;
-          case R_VK_UBOTypeKind_Geo2D:              {unit_count = R_MAX_GEO2D_PASS;}break;
-          case R_VK_UBOTypeKind_Geo3D:              {unit_count = R_MAX_GEO3D_PASS;}break;
-          case R_VK_UBOTypeKind_Geo3D_TileFrustum:  {unit_count = R_MAX_GEO3D_PASS;}break;
-          case R_VK_UBOTypeKind_Geo3D_LightCulling: {unit_count = R_MAX_GEO3D_PASS;}break;
-        }
-        ret->frames[i].ubo_buffers[kind] = r_vk_ubo_buffer_alloc(kind, unit_count);
-      }
-
-      // Create all storage buffers
-      for(U64 kind = 0; kind < R_VK_SBOTypeKind_COUNT; kind++)
-      {
-        U64 unit_count;
-        switch(kind)
-        {
-          default:                                  {InvalidPath;}break;
-          case R_VK_SBOTypeKind_Geo3D_Joints:       {unit_count = R_MAX_GEO3D_PASS;}break;
-          case R_VK_SBOTypeKind_Geo3D_Materials:    {unit_count = R_MAX_GEO3D_PASS;}break;
-          case R_VK_SBOTypeKind_Geo3D_Lights:       {unit_count = R_MAX_GEO3D_PASS;}break;
-          case R_VK_SBOTypeKind_Geo3D_Tiles:        {unit_count = R_MAX_GEO3D_PASS;}break;
-          case R_VK_SBOTypeKind_Geo3D_LightIndices: {unit_count = R_MAX_GEO3D_PASS;}break;
-          case R_VK_SBOTypeKind_Geo3D_TileLights:   {unit_count = R_MAX_GEO3D_PASS;}break;
-        }
-        ret->frames[i].sbo_buffers[kind] = r_vk_sbo_buffer_alloc(kind, unit_count);
-      }
-
-      ////////////////////////////////
-      //~ Create instance buffers for rect and geo3d
-      // FIXME: this is a mess, we should just create a BufferArray type, then use it for ubo,sbo,instance,index buffer, also we don't actually need to pre-allocated these buffer, just use frame batch
-
-      // TODO(k): just remember to free this
-      // create inst buffer for rect
-      for(U64 j = 0; j < R_MAX_RECT_PASS; j++)
-      {
-        R_VK_Buffer *buffer = &ret->frames[i].inst_buffer_rect[j];
-        VkBufferCreateInfo create_info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-        create_info.size = sizeof(R_Rect2DInst)*R_MAX_RECT_INSTANCES;
-        create_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &create_info, NULL, &buffer->h));
-
-        VkMemoryRequirements mem_requirements;
-        vkGetBufferMemoryRequirements(r_vk_ldevice()->h, buffer->h, &mem_requirements);
-
-        buffer->kind = R_ResourceKind_Static;
-        buffer->size = mem_requirements.size;
-
-        VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-        R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
-        VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, buffer->h, memory->h, memory->offset));
-        r_vk_memory_map(memory);
-        buffer->memory = memory;
-      }
-
-      // TODO(k): just remember to free this
-      for(U64 j = 0; j < R_MAX_GEO2D_PASS; j++)
-      {
-        R_VK_Buffer *buffer = &ret->frames[i].inst_buffer_mesh2d[j];
-        VkBufferCreateInfo create_info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-        create_info.size = sizeof(R_Mesh2DInst)*R_MAX_MESH2D_INSTANCES;
-        create_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &create_info, NULL, &buffer->h));
-
-        VkMemoryRequirements mem_requirements;
-        vkGetBufferMemoryRequirements(r_vk_ldevice()->h, buffer->h, &mem_requirements);
-
-        buffer->kind = R_ResourceKind_Static;
-        buffer->size = mem_requirements.size;
-
-        VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-        R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
-        VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, buffer->h, memory->h, memory->offset));
-        r_vk_memory_map(memory);
-        buffer->memory = memory;
-      }
-
-      // TODO(k): just remember to free this
-      // create inst buffer for rect
-      for(U64 j = 0; j < R_MAX_GEO3D_PASS; j++)
-      {
-        R_VK_Buffer *buffer = &ret->frames[i].inst_buffer_mesh3d[j];
-        VkBufferCreateInfo create_info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-        create_info.size = sizeof(R_Mesh3DInst)*R_MAX_MESH3D_INSTANCES;
-        create_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &create_info, NULL, &buffer->h));
-
-        VkMemoryRequirements mem_requirements;
-        vkGetBufferMemoryRequirements(r_vk_ldevice()->h, buffer->h, &mem_requirements);
-
-        buffer->kind = R_ResourceKind_Static;
-        buffer->size = mem_requirements.size;
-
-        VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-        R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
-        VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, buffer->h, memory->h, memory->offset));
-        r_vk_memory_map(memory);
-        buffer->memory = memory;
-      }
-    }
   }
 
-  ////////////////////////////////
-  // ~ Pipeline creation
-
+  // Create WindowFrames
+  R_VK_WindowFrame window_frames[R_VK_MAX_FRAMES_IN_FLIGHT] = {0};
+  for(U64 i = 0; i < R_VK_MAX_FRAMES_IN_FLIGHT; ++i)
   {
-    // rect
-    ret->pipelines.rect = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Rect, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, render_targets->swapchain.format, 0);
-
-    // blur
-
-    // noise
-    ret->pipelines.noise = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Noise, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, render_targets->swapchain.format, 0);
-
-    // edge
-    ret->pipelines.edge = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Edge, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, render_targets->swapchain.format, 0);
-
-    // crt
-    ret->pipelines.crt = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Crt, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, render_targets->swapchain.format, 0);
-
-    // bloom
-    ret->pipelines.bloom_down = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_BloomDown, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, render_targets->swapchain.format, 0);
-    ret->pipelines.bloom_up = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_BloomUp, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, render_targets->swapchain.format, 0);
-
-    // geo2d
-    for(U64 i = 0; i < R_GeoTopologyKind_COUNT; i++)
-    {
-      for(U64 j = 0; j < R_GeoPolygonKind_COUNT; j++)
-      {
-        ret->pipelines.geo2d.forward[i*R_GeoPolygonKind_COUNT + j] = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Geo2D_Forward, i, j, render_targets->swapchain.format, 0);
-      }
-    }
-    ret->pipelines.composite = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Composite, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, render_targets->swapchain.format, 0);
-    ret->pipelines.composite_additive = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_CompositeAdditive, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, render_targets->swapchain.format, 0);
-
-    // geo3d
-    ret->pipelines.geo3d.tile_frustum = r_vk_cmp_pipeline(R_VK_PipelineKind_CMP_Geo3D_TileFrustum);
-    ret->pipelines.geo3d.light_culling = r_vk_cmp_pipeline(R_VK_PipelineKind_CMP_Geo3D_LightCulling);
-    for(U64 i = 0; i < R_GeoTopologyKind_COUNT; i++)
-    {
-      for(U64 j = 0; j < R_GeoPolygonKind_COUNT; j++)
-      {
-        ret->pipelines.geo3d.z_pre[i*R_GeoPolygonKind_COUNT + j] = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Geo3D_ZPre, i, j, render_targets->swapchain.format, 0);
-        ret->pipelines.geo3d.debug[i*R_GeoPolygonKind_COUNT + j] = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Geo3D_Debug, i, j, render_targets->swapchain.format, 0);
-        ret->pipelines.geo3d.forward[i*R_GeoPolygonKind_COUNT + j] = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Geo3D_Forward, i, j, render_targets->swapchain.format, 0);
-      }
-    }
-    ret->pipelines.geo3d.composite = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Geo3D_Composite, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, render_targets->swapchain.format, 0);
-
-    // finalize
-    ret->pipelines.finalize = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Finalize, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, render_targets->swapchain.format, 0);
+    window_frames[i].rt_set = r_vk_render_target_set_alloc(os_wnd, &surface, swapchain->extent);
+    // Semaphore to signal that an image has been acquired from the swapchain and is ready for rendering
+    window_frames[i].img_acq_sem = r_vk_semaphore(r_vk_ldevice()->h);
+    // FIXME: we could reuse command buffer
+    window_frames[i].cmd_buffer = command_buffers[i];
   }
 
-  // fill & return
+  // Fill Info
   ret->os_wnd = os_wnd;
-  ret->render_targets = render_targets;
   ret->surface = surface;
+  ret->swapchain = swapchain;
+  MemoryCopy(ret->frames, window_frames, sizeof(window_frames));
   ProfEnd();
   return r_vk_handle_from_window(ret);
 }
@@ -5270,7 +5261,7 @@ r_tex2d_release(R_Handle handle)
 
   vkDestroyImageView(r_vk_ldevice()->h, tex2d->image.view, NULL);
   vkDestroyImage(r_vk_ldevice()->h, tex2d->image.h, NULL);
-  r_vk_descriptor_set_destroy(&tex2d->desc_set);
+  r_vk_descriptor_set_release(&tex2d->desc_set);
   r_vk_memory_release(tex2d->image.memory);
 
   SLLStackPush(r_vk_state->first_free_tex2d, tex2d);
@@ -5355,37 +5346,16 @@ r_buffer_alloc(R_ResourceKind kind, U64 size, void *data, U64 data_size)
       VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
       R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, property_flags, 0);
       VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, buffer, memory->h, memory->offset));
-
-      // Create stage buffer
-      R_VK_Buffer *stage_buffer = r_vk_stage_buffer_from_size(data_size);
-      MemoryCopy(stage_buffer->memory->mapped, data, data_size);
-
-      // Copy
-      // FIXME: if we in frame scope, we could use frame command buffer, fallback to oneshot command buffer
-      VkCommandBuffer cmd = r_vk_state->oneshot_cmd_buf;
-      CmdScope(cmd)
-      {
-        VkBufferCopy copy_region = {
-          .srcOffset = 0, // Optional
-          .dstOffset = 0, // Optional
-          .size = data_size,
-        };
-
-        // It is not possible to specify VK_WHOLE_SIZE here unlike the vkMapMemory command
-        vkCmdCopyBuffer(cmd, stage_buffer->h, buffer, 1, &copy_region);
-
-        // TODO(k): we should bind a barrier here
-      }
-
-      // TODO(k) it's not effecient to use vkQueueWaitIdle, maybe we could add a to_free queue, and use some sync primitive to do this
-      // index Semaphore could be a good idea
-      VK_Assert(vkQueueWaitIdle(r_vk_ldevice()->gfx_queue));
-
-      // Free staging buffer and memory
-      r_vk_buffer_release(stage_buffer);
-
       ret->h = buffer;
       ret->memory = memory;
+
+      // Copy
+      VkBufferCopy copy_region = {
+        .srcOffset = 0, // Optional
+        .dstOffset = 0, // Optional
+        .size = data_size,
+      };
+      r_vk_stage_copy_buffer(data, data_size, ret, &copy_region);
     }break;
     case R_ResourceKind_Dynamic:
     {
@@ -5406,55 +5376,6 @@ r_hook void
 r_buffer_copy(R_Handle handle, void *data, U64 size)
 {
   NotImplemented;
-#if 0
-  R_VK_Buffer *buffer = r_vk_buffer_from_handle(handle);
-  buffer->size = size;
-
-  VkCommandBuffer cmd = r_vk_top_cmd();
-  switch(buffer->kind)
-  {
-    case R_ResourceKind_Dynamic:
-    // case R_ResourceKind_Stream:
-    {
-      MemoryCopy(buffer->memory->mapped, data, size);
-
-      // copy staging buffer to device local buffer
-      // NOTE(k): we can't use oneshot_cmd_buf, since we didn't wait for the oneshot cmd buffer, maybe we should use frame cmd buffer
-      // VkCommandBuffer cmd = r_vk_state->oneshot_cmd_buf;
-      VkBufferCopy copy_region = {
-        .srcOffset = 0, // Optional
-        .dstOffset = 0, // Optional
-        .size      = size,
-      };
-
-      // It is not possible to specify VK_WHOLE_SIZE here unlike the vkMapMemory command
-      vkCmdCopyBuffer(cmd, buffer->staging, buffer->h, 1, &copy_region);
-
-      // create a buffer barrier
-      VkBufferMemoryBarrier barrier = 
-      {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-        // If you are using the barrier to transfer queue family ownership, then these two fields should be the indices of the queue families
-        // They must be set to VK_QUEUE_FAMILY_IGNORED if you don't want to do this (not the default value)
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-        .dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT|VK_ACCESS_INDEX_READ_BIT,
-        .buffer = buffer->h,
-        .offset = 0,
-        .size = size,
-      };
-      vkCmdPipelineBarrier(cmd,
-                           VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
-                           0,0, NULL, 1, &barrier, 0, 0);
-    }break;
-    case R_ResourceKind_Stream:
-    {
-      MemoryCopy(buffer->mapped, data, size);
-    }break;
-    default: {InvalidPath;}break;
-  }
-#endif
 }
 
 r_hook void
@@ -5472,16 +5393,138 @@ r_buffer_release(R_Handle handle)
 r_hook void
 r_begin_frame(void)
 {
-  // submit any stage works to gfx queue
-  if(r_vk_state->stage.last_touch_frame_index == r_vk_state->frame_index)
+  R_VK_Frame *frame = r_vk_current_frame();
+
+  // Wait until the previous frame has finished
+  // This function takes an array of fences and waits on the host for either any or all of the fences to be signaled before returning
+  // The VK_TRUE we pass here indicates that we want to wait for all fences
+  // This function also has a timeout parameter that we set to the maxium value of 64 bit unsigned integer, which effectively disables the timeout
+  VK_Assert(vkWaitForFences(r_vk_ldevice()->h, 1, &frame->inflt_fence, VK_TRUE, UINT64_MAX));
+
+  VK_Assert(vkResetFences(r_vk_ldevice()->h, 1, &frame->inflt_fence));
+  VK_Assert(vkResetCommandBuffer(frame->cmd_buffer, 0));
+
+  // Stage Copy
   {
-    r_vk_stage_end();
+    R_VK_FrameStage *stage = &frame->stages[0];
+    if(stage->first_staging_buffer)
+    {
+      VkCommandBuffer cmd_buffer = frame->cmd_buffer;
+
+      VkCommandBufferBeginInfo begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+      begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+      begin_info.pInheritanceInfo = 0;
+
+      VK_Assert(vkBeginCommandBuffer(cmd, &begin_info));
+
+      for(R_VK_Buffer *staging_buffer = stage->first_staging_buffer;
+          staging_buffer != 0;
+          staging_buffer = staging_buffer->next)
+      {
+        // FIXME: target could be buffer or image
+        r_vk_image_transition(cmd_buffer,
+                              staging_buffer->staging.image.dst,
+                              .src_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                              .src_access_flag = VK_ACCESS_TRANSFER_WRITE_BIT,
+                              .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
+      }
+
+      // Submit
+      {
+        VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        VK_Assert(vkEndCommandBuffer(cmd));
+        VK_Assert(vkResetFences(r_vk_ldevice()->h, 1, &fence));
+        VK_Assert(vkQueueSubmit(r_vk_ldevice()->gfx_queue, 1, &si, fence));
+      }
+    }
+  }
+
+  // Clear back stage buffer
+  {
+    R_VK_FrameStage *stage = &frame->stages[1];
+    R_VK_Buffer *heads[] = {stage->first_staged_buffer, stage->first_staging_buffer};
+    for(U64 i = 0; i < ArrayCount(heads); ++i)
+    {
+      for(R_VK_Buffer *buffer = heads[i], *next = 0; buffer != 0; buffer = next)
+      {
+        R_VK_Buffer *next = buffer->next;
+        Assert(buffer->pool_slot);
+        r_vk_buffer_release_to_pool(buffer);
+      }
+    }
+    MemoryZeroStruct(stage);
   }
 }
 
 r_hook void
 r_end_frame(void)
 {
+  R_VK_Frame *frame = r_vk_current_frame();
+  R_VK_FrameStage *stage = &frame->stages[0];
+
+  ////////////////////////////////
+  //~ Record stage commands
+
+  ////////////////////////////////
+  //~ Submit command buffers 
+
+  {
+    VkSubmitInfo submit_info = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    submit_info.pWaitSemaphores      = stage->wait_semaphores;
+    submit_info.pWaitDstStageMask    = stage->wait_stages;
+    submit_info.waitSemaphoreCount   = darray_size(stage->wait_semaphores);
+    submit_info.pCommandBuffers      = stage->command_buffers;
+    submit_info.commandBufferCount   = darray_size(stage->command_buffers);
+    submit_info.pSignalSemaphores    = stage->signal_semaphores;
+    submit_info.signalSemaphoreCount = darray_size(stage->signal_semaphores);
+    ProfScope("Queue Submition")
+    {
+      VK_Assert(vkQueueSubmit(r_vk_ldevice()->gfx_queue, 1, &submit_info, frame->inflt_fence));
+    }
+  }
+
+  ////////////////////////////////
+  //~ Present all windows
+
+  for(U64 i = 0; i < darray_size(stage->windows_to_present); ++i)
+  {
+    R_VK_Window *window = stage->windows_to_present[i];
+    R_VK_WindowFrame *window_frame = r_vk_frame_from_window(window);
+
+    VkSwapchainKHR swapchains[] = {window->swapchain->h};
+    VkPresentInfoKHR prest_info = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
+    prest_info.waitSemaphoreCount = 1;
+    prest_info.pWaitSemaphores = &stage->signal_semaphores[i];
+    prest_info.pSwapchains = swapchains;
+    prest_info.swapchainCount = 1;
+    prest_info.pImageIndices = &window_frame->img_idx;
+    // It allows you to specify an array of VkResult values to check for every individual swapchain if presentation was successful
+    // It's not necessary if you're only using a single swapchain, because you can simply use the return value of the present function
+    prest_info.pResults = NULL; // Optional
+
+    VkResult prest_ret = 0;
+    ProfScope("queue present")
+    {
+      prest_ret = vkQueuePresentKHR(r_vk_ldevice()->prest_queue, &prest_info);
+    }
+
+    // NOTE(k): It is important to only check window_resized here to ensure that the job-done semaphores are in a consistent state
+    //          otherwise a signaled semaphore may never be properly waited upon
+    if(prest_ret == VK_ERROR_OUT_OF_DATE_KHR || prest_ret == VK_SUBOPTIMAL_KHR)
+    {
+      Vec2F32 window_dim = dim_2f32(os_client_rect_from_window(window->os_wnd,0));
+      if(window_dim.x != 0 && window_dim.y != 0) r_vk_window_resize(window);
+      // NOTE(k): if window is minimalized, we skip handling resizing, caller should not submit if it's still minimalized next frame
+    } 
+    else { AssertAlways(prest_ret == VK_SUCCESS); }
+  }
+
+  Swap(R_VK_FrameStage, frame->stages[0], frame->stages[1]); // flip stages
   r_vk_state->frame_index++;
   arena_clear(r_vk_state->frame_arena);
 }
@@ -5490,15 +5533,10 @@ r_hook void
 r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
 {
   ProfBeginFunction();
-  R_VK_Window *wnd = r_vk_window_from_handle(window_equip);
-  R_VK_Frame *frame = &wnd->frames[wnd->curr_frame_idx];
-  R_VK_LogicalDevice *device = r_vk_ldevice();
 
-  // Wait until the previous frame has finished
-  // This function takes an array of fences and waits on the host for either any or all of the fences to be signaled before returning
-  // The VK_TRUE we pass here indicates that we want to wait for all fences
-  // This function also has a timeout parameter that we set to the maxium value of 64 bit unsigned integer, which effectively disables the timeout
-  VK_Assert(vkWaitForFences(r_vk_ldevice()->h, 1, &frame->inflt_fence, VK_TRUE, UINT64_MAX));
+  R_VK_Window *window = r_vk_window_from_handle(window_equip);
+  R_VK_WindowFrame *window_frame = &window->frames[r_vk_state->frame_index%R_VK_MAX_FRAMES_IN_FLIGHT];
+  R_VK_LogicalDevice *device = r_vk_ldevice();
 
   // Vulkan will usually just tell us that the swapchain is no longer adequate during presentation
   // The vkAcquireNextImageKHR and vkQueuePresentKHR functions can return the following special values to indicate this
@@ -5509,10 +5547,10 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
   while(1)
   {
     // Acquire image from swapchain
-    ProfScope("Acquire image") ret = vkAcquireNextImageKHR(device->h, wnd->render_targets->swapchain.h, UINT64_MAX, frame->img_acq_sem, VK_NULL_HANDLE, &frame->img_idx);
+    ProfScope("Acquire image") ret = vkAcquireNextImageKHR(device->h, window->swapchain->h, UINT64_MAX, window_frame->img_acq_sem, VK_NULL_HANDLE, &window_frame->img_idx);
     if(ret == VK_ERROR_OUT_OF_DATE_KHR)
     {
-      r_vk_window_resize(wnd);
+      r_vk_window_resize(window);
       continue;
     }
     if(ret == VK_SUBOPTIMAL_KHR)
@@ -5524,29 +5562,17 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
     break;
   }
 
-  // TODO(k): there is one issue though, we are only keep the bag and rendpass_grp references, and it's not good enough
-  // if window is resizing, bag and rendpass_grp between frames won't be synced, the count of to_free_bag will keeping increasing, and the gpu memory will run out
-  // we could use some kind of generation or index to check if a bag or rendpass_grp could be cleared
-
-  R_VK_RenderTargets *targets = frame->render_targets_ref;
-  if(targets != 0)
-  {
-    targets->rc--;
-    Assert(targets->rc >= 0);
-  }
-
   ////////////////////////////////
   //~ Destroy deprecated render targets
 
   ProfScope("Destroy deprecated render targets")
-  for(R_VK_RenderTargets *t = r_vk_state->first_to_free_render_targets; t != 0;)
+  for(R_VK_RenderTargetSet *t = r_vk_state->first_to_free_rt_set; t != 0;)
   {
-    R_VK_RenderTargets *next = t->next;
-    if(t->rc == 0 && (r_vk_state->frame_index-t->deprecated_at_frame) > R_VK_MAX_FRAMES_IN_FLIGHT)
+    R_VK_RenderTargetSet *next = t->next;
+    if((r_vk_state->frame_index-t->last_touched_frame_index) > R_VK_MAX_FRAMES_IN_FLIGHT)
     {
-      SLLQueuePop(r_vk_state->first_to_free_render_targets, r_vk_state->last_to_free_render_targets);
-      r_vk_render_targets_destroy(t);
-      SLLStackPush(r_vk_state->first_free_render_targets, t);
+      SLLQueuePop(r_vk_state->first_to_free_rt_set, r_vk_state->last_to_free_rt_set);
+      r_vk_render_target_set_destroy(t);
     }
     else
     {
@@ -5555,21 +5581,20 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
     t = next;
   }
 
-  // reset frame fence & command buffer
-  VK_Assert(vkResetFences(device->h, 1, &frame->inflt_fence));
-  VK_Assert(vkResetCommandBuffer(frame->cmd_buf, 0));
+  // Reset WindowFrame's command buffer
+  VK_Assert(vkResetCommandBuffer(window_frame->cmd_buffer, 0));
 
-  // start command recrod
-  r_vk_cmd_begin(frame->cmd_buf);
+  // Start command recrod
+  r_vk_cmd_begin(window_frame->cmd_buffer);
 
   ////////////////////////////////
-  //~ Clear framebuffers (stage color & stage id)
+  //~ Clear stage color & stage id)
 
   // NOTE(k): we can't clear swapchain image using this, since swap image don't guarantee to have usage of VK_IMAGE_USAGE_TRANSFER_DST
   // https://github.com/GameTechDev/IntroductionToVulkan/issues/4
-  VkImage stage_color_image = wnd->render_targets->stage_color_image.h;
+  VkImage stage_color_image = window_frame->rt_set->stage_color_image.h;
   {
-    r_vk_image_transition(frame->cmd_buf, stage_color_image,
+    r_vk_image_transition(window_frame->cmd_buffer, stage_color_image,
                           .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
                           .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                           .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
@@ -5583,8 +5608,8 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
     subrange.levelCount     = 1;
     subrange.baseArrayLayer = 0;
     subrange.layerCount     = 1;
-    vkCmdClearColorImage(frame->cmd_buf, stage_color_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_clr, 1, &subrange);
-    r_vk_image_transition(frame->cmd_buf, stage_color_image,
+    vkCmdClearColorImage(window_frame->cmd_buffer, stage_color_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_clr, 1, &subrange);
+    r_vk_image_transition(window_frame->cmd_buffer, stage_color_image,
                           .src_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                           .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                           .src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -5592,10 +5617,10 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
                           .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                           .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
   }
-  VkImage id_color_image = wnd->render_targets->stage_id_image.h;
+  VkImage id_color_image = window_frame->rt_set->stage_id_image.h;
   {
     // [id_color_image] undefined -> transfer_dst
-    r_vk_image_transition(frame->cmd_buf, id_color_image,
+    r_vk_image_transition(window_frame->cmd_buffer, id_color_image,
                           .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
                           .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                           .src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -5609,8 +5634,8 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
     subrange.levelCount     = 1;
     subrange.baseArrayLayer = 0;
     subrange.layerCount     = 1;
-    vkCmdClearColorImage(frame->cmd_buf, id_color_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_clr, 1, &subrange);
-    r_vk_image_transition(frame->cmd_buf, id_color_image,
+    vkCmdClearColorImage(window_frame->cmd_buffer, id_color_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_clr, 1, &subrange);
+    r_vk_image_transition(window_frame->cmd_buffer, id_color_image,
                           .src_layout =VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                           .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                           .src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -5618,38 +5643,27 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
                           .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                           .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
   }
-
-  // reset per-frame index
-  wnd->ui_group_index = 0;
-  wnd->ui_pass_index = 0;
-  wnd->geo2d_pass_index = 0;
-  wnd->geo3d_pass_index = 0;
-
-  r_vk_push_cmd(frame->cmd_buf);
   ProfEnd();
 }
 
 r_hook Vec3F32
-r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
+r_window_end_frame(OS_Handle os_wnd, R_Handle window_equip, Vec2F32 mouse_ptr)
 {
   ProfBeginFunction();
 
-  // unpack params
-  R_VK_Window *wnd = r_vk_window_from_handle(window_equip);
-  R_VK_Frame *frame = &wnd->frames[wnd->curr_frame_idx];
-  VkCommandBuffer cmd_buf = frame->cmd_buf;
-  R_VK_Swapchain *swapchain = &wnd->render_targets->swapchain;
+  // Unpack params
+  R_VK_Window *window = r_vk_window_from_handle(window_equip);
+  R_VK_WindowFrame *window_frame = &window->frames[r_vk_state->frame_index%R_VK_MAX_FRAMES_IN_FLIGHT];
+  R_VK_RenderTargetSet *rt_set = window_frame->rt_set;
+  VkCommandBuffer cmd_buffer = window_frame->cmd_buffer;
+  R_VK_Swapchain *swapchain = window->swapchain;
 
   // NOTE(k): stage_id_cpu buffer could be lagged by several frames
   // get point entity id
-  void *ids = wnd->render_targets->stage_id_cpu.memory->mapped;
+  void *ids = rt_set->stage_id_cpu.memory->mapped;
   // U64 id = ((U64 *)ids)[(U64)(ptr.y*w+ptr.x)];
   Vec4F32 id = ((Vec4F32 *)ids)[0];
   // Vec4F32 id = {0};
-
-  // increase render_targets ref counter
-  frame->render_targets_ref = wnd->render_targets;
-  frame->render_targets_ref->rc++;
 
   ////////////////////////////////
   //~ Copy stage id image to stage id buffer (cpu)
@@ -5661,7 +5675,7 @@ r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
     barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; // Not changing queue families
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = wnd->render_targets->stage_id_image.h;
+    barrier.image = rt_set->stage_id_image.h;
     barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     barrier.subresourceRange.baseMipLevel = 0;
     barrier.subresourceRange.levelCount = 1;
@@ -5673,7 +5687,7 @@ r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
     VkPipelineStageFlags srcStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkPipelineStageFlags dstStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 
-    vkCmdPipelineBarrier(cmd_buf,
+    vkCmdPipelineBarrier(cmd_buffer,
                          srcStage, dstStage, // Source and destination pipeline stages
                          0,                  // No dependency flags
                          0, NULL,            // Memory barriers
@@ -5689,12 +5703,12 @@ r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
     region.imageSubresource.baseArrayLayer = 0;
     region.imageSubresource.layerCount = 1;
     Vec2F32 range = {mouse_ptr.x, mouse_ptr.y};
-    range.x = Clamp(0,mouse_ptr.x,wnd->render_targets->stage_id_image.extent.width-1);
-    range.y = Clamp(0,mouse_ptr.y,wnd->render_targets->stage_id_image.extent.height-1);
+    range.x = Clamp(0,mouse_ptr.x,rt_set->stage_id_image.extent.width-1);
+    range.y = Clamp(0,mouse_ptr.y,rt_set->stage_id_image.extent.height-1);
     region.imageOffset = (VkOffset3D){range.x,range.y,0};
     // region.imageExtent = (VkExtent3D){wnd->bag->geo3d_id_image.extent.width, wnd->bag->geo3d_id_image.extent.height, 1};
     region.imageExtent = (VkExtent3D){1, 1, 1};
-    vkCmdCopyImageToBuffer(cmd_buf, wnd->render_targets->stage_id_image.h, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, wnd->render_targets->stage_id_cpu.h, 1, &region);
+    vkCmdCopyImageToBuffer(cmd_buffer, rt_set->stage_id_image.h, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rt_set->stage_id_cpu.h, 1, &region);
   }
 
   ////////////////////////////////
@@ -5704,7 +5718,7 @@ r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
     VkClearValue clear_color = {0};
     clear_color.color = (VkClearColorValue){{ 0.0f, 0.0f, 0.0f, 0.0f }}; /* black with 100% opacity */
     VkRenderingAttachmentInfo color_attachment_info = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
-    color_attachment_info.imageView = swapchain->image_views[frame->img_idx];
+    color_attachment_info.imageView = swapchain->image_views[window_frame->img_idx];
     color_attachment_info.imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
     color_attachment_info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -5712,13 +5726,13 @@ r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
 
     VkRenderingInfo render_info = { VK_STRUCTURE_TYPE_RENDERING_INFO };
     render_info.renderArea.offset = (VkOffset2D){0, 0};
-    render_info.renderArea.extent = wnd->render_targets->stage_color_image.extent;
+    render_info.renderArea.extent = rt_set->stage_color_image.extent;
     render_info.layerCount = 1;
     render_info.colorAttachmentCount = 1;
     render_info.pColorAttachments = &color_attachment_info;
 
     // transition stage color image layout to shader read optimal
-    r_vk_image_transition(cmd_buf, wnd->render_targets->stage_color_image.h,
+    r_vk_image_transition(cmd_buffer, rt_set->stage_color_image.h,
                           .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                           .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                           .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -5727,7 +5741,7 @@ r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
                           .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
 
     // [swapchain image] undefined -> color_attachment
-    r_vk_image_transition(frame->cmd_buf, swapchain->images[frame->img_idx],
+    r_vk_image_transition(cmd_buffer, swapchain->images[window_frame->img_idx],
                           .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
                           .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                           .src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -5736,10 +5750,10 @@ r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
                           .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 
     // begin
-    vkCmdBeginRendering(cmd_buf, &render_info);
+    vkCmdBeginRendering(cmd_buffer, &render_info);
 
     // bind pipeline
-    vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.finalize.h);
+    vkCmdBindPipeline(cmd_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, r_vk_state->pipeline_set.finalize.h);
 
     // viewport and scissor
     VkViewport viewport = {0};
@@ -5749,23 +5763,23 @@ r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
     viewport.height   = swapchain->extent.height;
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
-    vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
+    vkCmdSetViewport(cmd_buffer, 0, 1, &viewport);
 
     // setup scissor rect
     VkRect2D scissor = {0};
     scissor.offset = (VkOffset2D){0, 0};
     scissor.extent = swapchain->extent;
-    vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
+    vkCmdSetScissor(cmd_buffer, 0, 1, &scissor);
 
     // bind stage color descriptor
-    vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.finalize.layout, 0, 1, &wnd->render_targets->stage_color_ds.h, 0, NULL);
+    vkCmdBindDescriptorSets(cmd_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, r_vk_state->pipeline_set.finalize.layout, 0, 1, &rt_set->stage_color_ds.h, 0, NULL);
 
     // draw the quad
-    vkCmdDraw(cmd_buf, 4, 1, 0, 0);
+    vkCmdDraw(cmd_buffer, 4, 1, 0, 0);
 
-    vkCmdEndRendering(cmd_buf);
+    vkCmdEndRendering(cmd_buffer);
   }
-  r_vk_image_transition(frame->cmd_buf, swapchain->images[frame->img_idx],
+  r_vk_image_transition(cmd_buffer, swapchain->images[window_frame->img_idx],
                         .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                         .dst_layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                         .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -5773,61 +5787,19 @@ r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
                         .dst_stage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                         .dst_access_flag = 0);
 
-  ////////////////////////////////
-  //~ Submit gfx command buffer
-
-  VK_Assert(vkEndCommandBuffer(cmd_buf));
-  VkSemaphore wait_sems[1] = { frame->img_acq_sem };
-  VkPipelineStageFlags wait_stages[1] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-  VkSemaphore signal_sems[1] = { swapchain->submit_semaphores[frame->img_idx] };
-
-  // submit
-  VkSubmitInfo submit_info = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-  submit_info.waitSemaphoreCount   = 1;
-  submit_info.pWaitSemaphores      = wait_sems;
-  submit_info.pWaitDstStageMask    = wait_stages;
-  submit_info.commandBufferCount   = 1;
-  submit_info.pCommandBuffers      = &cmd_buf;
-  submit_info.signalSemaphoreCount = 1;
-  submit_info.pSignalSemaphores    = signal_sems;
-  ProfScope("queue submit")
-  {
-    VK_Assert(vkQueueSubmit(r_vk_ldevice()->gfx_queue, 1, &submit_info, frame->inflt_fence));
-  }
+  VK_Assert(vkEndCommandBuffer(cmd_buffer));
 
   ////////////////////////////////
-  //~ Present
+  //~ Push submition queue
 
-  VkSwapchainKHR target_swapchains[1] = { swapchain->h };
-  VkPresentInfoKHR prest_info = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
-  prest_info.waitSemaphoreCount = 1;
-  prest_info.pWaitSemaphores = signal_sems;
-  prest_info.swapchainCount = 1;
-  prest_info.pSwapchains = target_swapchains;
-  prest_info.pImageIndices = &frame->img_idx;
-  // It allows you to specify an array of VkResult values to check for every individual swapchain if presentation was successful
-  // It's not necessary if you're only using a single swapchain, because you can simply use the return value of the present function
-  prest_info.pResults = NULL; // Optional
+  R_VK_Frame *frame = r_vk_current_frame();
+  R_VK_FrameStage *stage = &frame->stages[0];
+  darray_push(r_vk_frame_arena(), stage->command_buffers, cmd_buffer);
+  darray_push(r_vk_frame_arena(), stage->wait_semaphores, window_frame->img_acq_sem);
+  darray_push(r_vk_frame_arena(), stage->wait_stages, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+  darray_push(r_vk_frame_arena(), stage->signal_semaphores, swapchain->submit_semaphores[window_frame->img_idx]);
+  darray_push(r_vk_frame_arena(), stage->windows_to_present, window);
 
-  VkResult prest_ret = 0;
-  ProfScope("queue present")
-  {
-    prest_ret = vkQueuePresentKHR(r_vk_ldevice()->prest_queue, &prest_info);
-  }
-
-  // NOTE(k): It is important to only check window_resized here to ensure that the job-done semaphores are in a consistent state
-  //          otherwise a signaled semaphore may never be properly waited upon
-  if(prest_ret == VK_ERROR_OUT_OF_DATE_KHR || prest_ret == VK_SUBOPTIMAL_KHR)
-  {
-    Vec2F32 window_dim = dim_2f32(os_client_rect_from_window(wnd->os_wnd,0));
-    if(window_dim.x != 0 && window_dim.y != 0) r_vk_window_resize(wnd);
-    // NOTE(k): if window is minimalized, we skip handling resizing, caller should not submit if it's still minimalized next frame
-  } 
-  else { AssertAlways(prest_ret == VK_SUCCESS); }
-
-  // bump window frame index
-  wnd->curr_frame_idx = (wnd->curr_frame_idx + 1) % R_VK_MAX_FRAMES_IN_FLIGHT;
-  r_vk_pop_cmd();
   ProfEnd();
   return v3f32(id.x, id.y, id.z);
 }
@@ -5835,35 +5807,30 @@ r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr)
 //- rjf: render pass submission
 
 r_hook void
-r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
+r_window_submit(R_Handle window_equip, R_PassList *passes)
 {
   ProfBeginFunction();
 
-  R_VK_Window *wnd = r_vk_window_from_handle(window_equip);
-  R_VK_Frame *frame = &wnd->frames[wnd->curr_frame_idx];
-  R_VK_RenderTargets *render_targets = wnd->render_targets;
-  VkCommandBuffer cmd_buf = frame->cmd_buf;
+  R_VK_Window *window = r_vk_window_from_handle(window_equip);
+  R_VK_WindowFrame *window_frame = r_vk_frame_from_window(window);
+  R_VK_RenderTargetSet *rt_set = window_frame->rt_set;
+  VkCommandBuffer cmd_buf = window_frame->cmd_buffer;
 
   // local_persist B32 first_submit = 1;
   // if(BUILD_DEBUG && first_submit)
   // {
-  //   printf("rt stage_color: %p\n", wnd->render_targets->stage_color_image.h);
-  //   printf("rt stage_id: %p\n", wnd->render_targets->stage_id_image.h);
-  //   printf("rt scratch_color: %p\n", wnd->render_targets->scratch_color_image.h);
-  //   printf("rt edge_image: %p\n", wnd->render_targets->edge_image.h);
-  //   printf("rt geo2d_color_image: %p\n", wnd->render_targets->geo2d_color_image.h);
+  //   printf("rt stage_color: %p\n", wnd->rt_set->stage_color_image.h);
+  //   printf("rt stage_id: %p\n", wnd->rt_set->stage_id_image.h);
+  //   printf("rt scratch_color: %p\n", wnd->rt_set->scratch_color_image.h);
+  //   printf("rt edge_image: %p\n", wnd->rt_set->edge_image.h);
+  //   printf("rt geo2d_color_image: %p\n", wnd->rt_set->geo2d_color_image.h);
 
-  //   printf("rt geo3d_color_image: %p\n", wnd->render_targets->geo3d_color_image.h);
-  //   printf("rt geo3d_normal_depth_image: %p\n", wnd->render_targets->geo3d_normal_depth_image.h);
-  //   printf("rt geo3d_depth_image: %p\n", wnd->render_targets->geo3d_depth_image.h);
-  //   printf("rt geo3d_pre_depth_image: %p\n", wnd->render_targets->geo3d_pre_depth_image.h);
+  //   printf("rt geo3d_color_image: %p\n", wnd->rt_set->geo3d_color_image.h);
+  //   printf("rt geo3d_normal_depth_image: %p\n", wnd->rt_set->geo3d_normal_depth_image.h);
+  //   printf("rt geo3d_depth_image: %p\n", wnd->rt_set->geo3d_depth_image.h);
+  //   printf("rt geo3d_pre_depth_image: %p\n", wnd->rt_set->geo3d_pre_depth_image.h);
   //   first_submit = 0;
   // }
-
-  U64 ui_group_index = wnd->ui_group_index;
-  U64 ui_pass_index = wnd->ui_pass_index;
-  U64 geo2d_pass_index = wnd->geo2d_pass_index;
-  U64 geo3d_pass_index = wnd->geo3d_pass_index;
 
   // Do passing
   for(R_PassNode *pass_n = passes->first; pass_n != 0; pass_n = pass_n->next)
@@ -5874,17 +5841,16 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
       case R_PassKind_Rect:
       {
         ProfBegin("UI Pass");
-        Assert(ui_pass_index < R_MAX_RECT_PASS);
         VkRenderingAttachmentInfo color_attachment_infos[2] = {0};
 
         color_attachment_infos[0].sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        color_attachment_infos[0].imageView   = render_targets->stage_color_image.view;
+        color_attachment_infos[0].imageView   = rt_set->stage_color_image.view;
         color_attachment_infos[0].imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
         color_attachment_infos[0].loadOp      = VK_ATTACHMENT_LOAD_OP_LOAD;
         color_attachment_infos[0].storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
 
         color_attachment_infos[1].sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        color_attachment_infos[1].imageView   = render_targets->stage_id_image.view;
+        color_attachment_infos[1].imageView   = rt_set->stage_id_image.view;
         color_attachment_infos[1].imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
         color_attachment_infos[1].loadOp      = VK_ATTACHMENT_LOAD_OP_LOAD;
         color_attachment_infos[1].storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
@@ -5893,7 +5859,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         // The render area defiens where shader loads and stores will take place
         // The pixels outside this region will have undefined values
         render_info.renderArea.offset = (VkOffset2D){0, 0};
-        render_info.renderArea.extent = wnd->render_targets->stage_color_image.extent;
+        render_info.renderArea.extent = rt_set->stage_color_image.extent;
         render_info.layerCount = 1;
         render_info.colorAttachmentCount = ArrayCount(color_attachment_infos);
         render_info.pColorAttachments = color_attachment_infos;
@@ -5906,26 +5872,25 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         R_BatchGroupRectList *rect_batch_groups = &params->rects;
 
         // Unpack uniform buffer
-        R_VK_UBOBuffer *uniform_buffer = &frame->ubo_buffers[R_VK_UBOTypeKind_Rect];
-        // TODO(k): dynamic allocate uniform buffer if needed
-        AssertAlways((ui_group_index+rect_batch_groups->count) < R_MAX_RECT_GROUPS);
+        U64 uniform_buffer_stride = AlignPow2(sizeof(R_VK_UBO_Rect), r_vk_pdevice()->properties.limits.minUniformBufferOffsetAlignment);
+        R_VK_Buffer *uniform_buffer = r_vk_buffer_from_pool(R_VK_BufferPoolKind_UBO, uniform_buffer_stride*rect_batch_groups->count);
 
         // Bind pipeline
         // The second parameter specifies if the pipeline object is a graphics or compute pipelinVK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BITe
         // We've now told Vulkan which operations to execute in the graphcis pipeline and which attachment to use in the fragment shader
-        vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.rect.h);
+        vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, r_vk_pipeline_set()->rect.h);
 
         VkViewport viewport = {0};
         viewport.x        = 0.0f;
         viewport.y        = 0.0f;
-        viewport.width    = render_targets->stage_color_image.extent.width;
-        viewport.height   = render_targets->stage_color_image.extent.height;
+        viewport.width    = rt_set->stage_color_image.extent.width;
+        viewport.height   = rt_set->stage_color_image.extent.height;
         viewport.minDepth = 0.0f;
         viewport.maxDepth = 1.0f;
         vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
 
         // Unpack inst buffer
-        R_VK_Buffer *inst_buffer = &frame->inst_buffer_rect[ui_pass_index];
+        R_VK_Buffer *inst_buffer = r_vk_buffer_from_pool(R_VK_BufferPoolKind_Instance, sizeof(R_Rect2DInst)*params->rects.inst_count);
 
         typedef struct R_VK_RectDrawGroup R_VK_RectDrawGroup;
         struct R_VK_RectDrawGroup
@@ -5951,14 +5916,14 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         }
 
         U64 inst_idx = 0;
-        U64 draw_group_count = 0;
+        U64 draw_group_index = 0;
         ProfScope("Collect RectPass DrawGroup") for(R_BatchGroupRectNode *group_node = rect_batch_groups->first; group_node != 0; group_node = group_node->next)
         {
-          R_VK_RectDrawGroup *draw_group = &draw_groups[draw_group_count];
+          R_VK_RectDrawGroup *draw_group = &draw_groups[draw_group_index];
           R_BatchList *batches = &group_node->batches;
           R_BatchGroupRectParams *group_params = &group_node->params;
           U64 first_instance = inst_idx;
-          R_VK_RectDrawGroup *prev_draw_group = draw_group_count > 0 ? &draw_groups[draw_group_count-1] : 0;
+          R_VK_RectDrawGroup *prev_draw_group = draw_group_index > 0 ? &draw_groups[draw_group_index-1] : 0;
 
           ////////////////////////////////
           //~ Fill instance buffer
@@ -6015,7 +5980,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           if(group_params->clip.x0 == 0 && group_params->clip.x1 == 0 && group_params->clip.y0 == 0 && group_params->clip.y1 == 0)
           {
             scissor.offset = (VkOffset2D){0,0};
-            scissor.extent = render_targets->stage_color_image.extent;
+            scissor.extent = rt_set->stage_color_image.extent;
           }
           else if(group_params->clip.x0 > group_params->clip.x1 || group_params->clip.y0 > group_params->clip.y1)
           {
@@ -6054,8 +6019,8 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           uniforms.xform_scale.y = length_2f32(xform_2x2_row1);
 
           // FIXME: this is what we want to test, individual write for coherent memory could cause unecessary cpu cycles
-          U32 uniform_buffer_offset = ui_group_index * uniform_buffer->stride;
-          MemoryCopy((U8 *)uniform_buffer->buffer.memory->mapped + uniform_buffer_offset, &uniforms, sizeof(R_VK_UBO_Rect));
+          U32 uniform_buffer_offset = draw_group_index * uniform_buffer_stride;
+          MemoryCopy((U8 *)uniform_buffer->memory->mapped + uniform_buffer_offset, &uniforms, sizeof(R_VK_UBO_Rect));
 
           // Fill and increament counter
           draw_group->first_instance = first_instance;
@@ -6064,9 +6029,10 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           draw_group->scissor = scissor;
           draw_group->scissor_dirty = scissor_dirty;
           draw_group->texture = texture;
-          ++draw_group_count;
-          ++ui_group_index;
+          ++draw_group_index;
         }
+
+        U64 draw_group_count = draw_group_index;
 
         // FIXME: todo
         // Upload instance buffer for the all groups
@@ -6084,7 +6050,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         if(draw_group_count > 0 && draw_groups[0].texture == 0)
         {
           R_VK_Tex2D *texture = r_vk_tex2d_from_handle(r_vk_state->backup_texture);
-          vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.rect.layout, 1, 1, &texture->desc_set.h, 0, NULL);
+          vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, r_vk_pipeline_set()->rect.layout, 1, 1, &texture->desc_set.h, 0, NULL);
         }
 
         // Draw each group
@@ -6093,12 +6059,12 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           R_VK_RectDrawGroup *draw_group = &draw_groups[draw_group_idx];
 
           // Bind uniform buffer
-          vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.rect.layout, 0, 1, &uniform_buffer->set.h, 1, &draw_group->uniform_buffer_offset);
+          vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, r_vk_pipeline_set()->rect.layout, 0, 1, &uniform_buffer->desc_set.h, 1, &draw_group->uniform_buffer_offset);
 
           // Bind texture
           if(draw_group->texture)
           {
-            vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.rect.layout, 1, 1, &draw_group->texture->desc_set.h, 0, NULL);
+            vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, r_vk_pipeline_set()->rect.layout, 1, 1, &draw_group->texture->desc_set.h, 0, NULL);
           }
 
           // Set scissor if it's dirty
@@ -6111,7 +6077,6 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         }
 
         vkCmdEndRendering(cmd_buf);
-        ui_pass_index++;
         ProfEnd();
       }break;
       case R_PassKind_Blur:
@@ -6122,6 +6087,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
       }break;
       case R_PassKind_Noise:
       {
+#if 0
         ProfBegin("noise pass");
         // unpack params
         R_PassParams_Noise *params = pass->params_noise;
@@ -6133,8 +6099,8 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         Vec2F32 viewport_dim = dim_2f32(params->rect);
         if(viewport_dim.x == 0 || viewport_dim.y == 0)
         {
-          viewport.width  = render_targets->scratch_color_image.extent.width;
-          viewport.height = render_targets->scratch_color_image.extent.height;
+          viewport.width  = rt_set->scratch_color_image.extent.width;
+          viewport.height = rt_set->scratch_color_image.extent.height;
         }
         else
         {
@@ -6149,20 +6115,20 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
         VkRect2D scissor = {0};
         scissor.offset = (VkOffset2D){0, 0};
-        scissor.extent = render_targets->stage_color_image.extent;
+        scissor.extent = rt_set->stage_color_image.extent;
         vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
 
         /////////////////////////////////////////////////////////////////////////////////
         // draw
 
-        r_vk_image_transition(frame->cmd_buf, render_targets->stage_color_image.h,
+        r_vk_image_transition(frame->cmd_buf, rt_set->stage_color_image.h,
                               .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                               .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                               .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                               .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
-        r_vk_image_transition(frame->cmd_buf, render_targets->scratch_color_image.h,
+        r_vk_image_transition(frame->cmd_buf, rt_set->scratch_color_image.h,
                               .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
                               .dst_layout =VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -6176,7 +6142,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         clear_colors[0].color = (VkClearColorValue){{ 0.0f, 0.0f, 0.0f, 0.0f }}; /* black with 100% opacity */
         VkRenderingAttachmentInfo color_attachment_infos[1] = {0};
         color_attachment_infos[0].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        color_attachment_infos[0].imageView = render_targets->scratch_color_image.view;
+        color_attachment_infos[0].imageView = rt_set->scratch_color_image.view;
         color_attachment_infos[0].imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
         color_attachment_infos[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color_attachment_infos[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -6184,7 +6150,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
         VkRenderingInfo render_info = { VK_STRUCTURE_TYPE_RENDERING_INFO };
         render_info.renderArea.offset = (VkOffset2D){0, 0};
-        render_info.renderArea.extent = wnd->render_targets->scratch_color_image.extent;
+        render_info.renderArea.extent = wnd->rt_set->scratch_color_image.extent;
         render_info.layerCount = 1;
         render_info.colorAttachmentCount = ArrayCount(color_attachment_infos);
         render_info.pColorAttachments = color_attachment_infos;
@@ -6192,8 +6158,8 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         // push constant
         R_VK_PUSH_Noise push = {0};
         push.mouse = v2f32(0,0); /* TODO(XXX): not used */
-        push.resolution.x = render_targets->scratch_color_image.extent.width;
-        push.resolution.y = render_targets->scratch_color_image.extent.height;
+        push.resolution.x = rt_set->scratch_color_image.extent.width;
+        push.resolution.y = rt_set->scratch_color_image.extent.height;
         push.time = params->elapsed_secs*0.5;
 
         vkCmdPushConstants(cmd_buf, wnd->pipelines.noise.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(R_VK_PUSH_Noise), &push);
@@ -6205,7 +6171,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         vkCmdBeginRendering(cmd_buf, &render_info);
 
         // bind stage color descriptor
-        vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.noise.layout, 0, 1, &render_targets->stage_color_ds.h, 0, NULL);
+        vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.noise.layout, 0, 1, &rt_set->stage_color_ds.h, 0, NULL);
 
         vkCmdDraw(cmd_buf, 4, 1, 0, 0);
 
@@ -6213,7 +6179,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         vkCmdEndRendering(cmd_buf);
 
         // [scratch_color_image] color attachment -> transfer src
-        r_vk_image_transition(cmd_buf, render_targets->scratch_color_image.h,
+        r_vk_image_transition(cmd_buf, rt_set->scratch_color_image.h,
                               .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -6221,7 +6187,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
                               .dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
                               .dst_access_flag = VK_ACCESS_TRANSFER_READ_BIT);
         // [stage_color_image] shader read -> transfer dst
-        r_vk_image_transition(cmd_buf, render_targets->stage_color_image.h,
+        r_vk_image_transition(cmd_buf, rt_set->stage_color_image.h,
                               .src_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                               .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
@@ -6231,8 +6197,8 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
         // copy scratch image to stage image
         {
-          VkImage src = render_targets->scratch_color_image.h;
-          VkImage dst = render_targets->stage_color_image.h;
+          VkImage src = rt_set->scratch_color_image.h;
+          VkImage dst = rt_set->stage_color_image.h;
           VkImageCopy copy_region = {0};
           copy_region.srcSubresource = (VkImageSubresourceLayers){
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -6248,9 +6214,9 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
             .layerCount = 1,
           };
           copy_region.dstOffset = (VkOffset3D){0,0,0};
-          copy_region.extent = (VkExtent3D){render_targets->scratch_color_image.extent.width, render_targets->scratch_color_image.extent.height, 1};
+          copy_region.extent = (VkExtent3D){rt_set->scratch_color_image.extent.width, rt_set->scratch_color_image.extent.height, 1};
           vkCmdCopyImage(cmd_buf, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
-          r_vk_image_transition(cmd_buf, render_targets->stage_color_image.h,
+          r_vk_image_transition(cmd_buf, rt_set->stage_color_image.h,
                                 .src_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                 .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                 .src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -6259,9 +6225,11 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
                                 .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
         }
         ProfEnd();
+#endif
       }break;
       case R_PassKind_Edge:
       {
+#if 0
         ProfBegin("edge pass");
         // unpack params
         R_PassParams_Edge *params = pass->params_edge;
@@ -6270,35 +6238,35 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         // viewport and scissor
 
         VkViewport viewport = {0};
-        viewport.width    = render_targets->scratch_color_image.extent.width;
-        viewport.height   = render_targets->scratch_color_image.extent.height;
+        viewport.width    = rt_set->scratch_color_image.extent.width;
+        viewport.height   = rt_set->scratch_color_image.extent.height;
         viewport.minDepth = 0.0f;
         viewport.maxDepth = 1.0f;
         vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
 
         VkRect2D scissor = {0};
         scissor.offset = (VkOffset2D){0, 0};
-        scissor.extent = render_targets->stage_color_image.extent;
+        scissor.extent = rt_set->stage_color_image.extent;
         vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
 
         /////////////////////////////////////////////////////////////////////////////////
         // draw
 
-        r_vk_image_transition(frame->cmd_buf, render_targets->stage_color_image.h,
+        r_vk_image_transition(frame->cmd_buf, rt_set->stage_color_image.h,
                               .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                               .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                               .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                               .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
-        r_vk_image_transition(frame->cmd_buf, render_targets->edge_image.h,
+        r_vk_image_transition(frame->cmd_buf, rt_set->edge_image.h,
                               .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                               .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                               .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                               .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
-        r_vk_image_transition(frame->cmd_buf, render_targets->scratch_color_image.h,
+        r_vk_image_transition(frame->cmd_buf, rt_set->scratch_color_image.h,
                               .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
                               .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -6313,7 +6281,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
         VkRenderingAttachmentInfo color_attachment_infos[1] = {0};
         color_attachment_infos[0].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        color_attachment_infos[0].imageView = render_targets->scratch_color_image.view;
+        color_attachment_infos[0].imageView = rt_set->scratch_color_image.view;
         color_attachment_infos[0].imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
         color_attachment_infos[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color_attachment_infos[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -6321,7 +6289,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
         VkRenderingInfo render_info = { VK_STRUCTURE_TYPE_RENDERING_INFO };
         render_info.renderArea.offset = (VkOffset2D){0, 0};
-        render_info.renderArea.extent = wnd->render_targets->scratch_color_image.extent;
+        render_info.renderArea.extent = wnd->rt_set->scratch_color_image.extent;
         render_info.layerCount = 1;
         render_info.colorAttachmentCount = ArrayCount(color_attachment_infos);
         render_info.pColorAttachments = color_attachment_infos;
@@ -6339,23 +6307,23 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         vkCmdBeginRendering(cmd_buf, &render_info);
 
         // bind stage color descriptor
-        vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.edge.layout, 0, 1, &render_targets->stage_color_ds.h, 0, NULL);
+        vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.edge.layout, 0, 1, &rt_set->stage_color_ds.h, 0, NULL);
         // bind edge color descriptor
-        vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.edge.layout, 1, 1, &render_targets->edge_ds.h, 0, NULL);
+        vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.edge.layout, 1, 1, &rt_set->edge_ds.h, 0, NULL);
 
         vkCmdDraw(cmd_buf, 4, 1, 0, 0);
 
         // end drawing
         vkCmdEndRendering(cmd_buf);
 
-        r_vk_image_transition(cmd_buf, render_targets->scratch_color_image.h,
+        r_vk_image_transition(cmd_buf, rt_set->scratch_color_image.h,
                               .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                               .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                               .dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
                               .dst_access_flag = VK_ACCESS_TRANSFER_READ_BIT);
-        r_vk_image_transition(cmd_buf, render_targets->stage_color_image.h,
+        r_vk_image_transition(cmd_buf, rt_set->stage_color_image.h,
                               .src_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                               .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
@@ -6365,8 +6333,8 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
         // copy scratch image to stage image
         {
-          VkImage src = render_targets->scratch_color_image.h;
-          VkImage dst = render_targets->stage_color_image.h;
+          VkImage src = rt_set->scratch_color_image.h;
+          VkImage dst = rt_set->stage_color_image.h;
           VkImageCopy copy_region = {0};
           copy_region.srcSubresource = (VkImageSubresourceLayers){
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -6382,9 +6350,9 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
             .layerCount = 1,
           };
           copy_region.dstOffset = (VkOffset3D){0,0,0};
-          copy_region.extent = (VkExtent3D){render_targets->scratch_color_image.extent.width, render_targets->scratch_color_image.extent.height, 1};
+          copy_region.extent = (VkExtent3D){rt_set->scratch_color_image.extent.width, rt_set->scratch_color_image.extent.height, 1};
           vkCmdCopyImage(cmd_buf, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
-          r_vk_image_transition(cmd_buf, render_targets->stage_color_image.h,
+          r_vk_image_transition(cmd_buf, rt_set->stage_color_image.h,
                                 .src_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                 .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                 .src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -6393,6 +6361,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
                                 .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
         }
         ProfEnd();
+#endif
       }break;
       case R_PassKind_Crt:
       {
@@ -6404,28 +6373,28 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         // viewport and scissor
 
         VkViewport viewport = {0};
-        viewport.width    = render_targets->scratch_color_image.extent.width;
-        viewport.height   = render_targets->scratch_color_image.extent.height;
+        viewport.width    = rt_set->scratch_color_image.extent.width;
+        viewport.height   = rt_set->scratch_color_image.extent.height;
         viewport.minDepth = 0.0f;
         viewport.maxDepth = 1.0f;
         vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
 
         VkRect2D scissor = {0};
         scissor.offset = (VkOffset2D){0, 0};
-        scissor.extent = render_targets->stage_color_image.extent;
+        scissor.extent = rt_set->stage_color_image.extent;
         vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
 
         /////////////////////////////////////////////////////////////////////////////////
         // draw
 
-        r_vk_image_transition(frame->cmd_buf, render_targets->stage_color_image.h,
+        r_vk_image_transition(cmd_buf, rt_set->stage_color_image.h,
                               .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                               .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                               .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                               .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
-        r_vk_image_transition(frame->cmd_buf, render_targets->scratch_color_image.h,
+        r_vk_image_transition(cmd_buf, rt_set->scratch_color_image.h,
                               .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
                               .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -6440,7 +6409,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
         VkRenderingAttachmentInfo color_attachment_infos[1] = {0};
         color_attachment_infos[0].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        color_attachment_infos[0].imageView = render_targets->scratch_color_image.view;
+        color_attachment_infos[0].imageView = rt_set->scratch_color_image.view;
         color_attachment_infos[0].imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
         color_attachment_infos[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color_attachment_infos[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -6448,43 +6417,43 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
         VkRenderingInfo render_info = { VK_STRUCTURE_TYPE_RENDERING_INFO };
         render_info.renderArea.offset = (VkOffset2D){0, 0};
-        render_info.renderArea.extent = wnd->render_targets->scratch_color_image.extent;
+        render_info.renderArea.extent = rt_set->scratch_color_image.extent;
         render_info.layerCount = 1;
         render_info.colorAttachmentCount = ArrayCount(color_attachment_infos);
         render_info.pColorAttachments = color_attachment_infos;
 
         // push constant
         R_VK_PUSH_Crt push = {0};
-        push.resolution.x = render_targets->scratch_color_image.extent.width;
-        push.resolution.y = render_targets->scratch_color_image.extent.height;
+        push.resolution.x = rt_set->scratch_color_image.extent.width;
+        push.resolution.y = rt_set->scratch_color_image.extent.height;
         push.time = params->elapsed_secs;
         push.scan = params->scan;
         push.warp = params->warp;
 
-        vkCmdPushConstants(cmd_buf, wnd->pipelines.crt.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(R_VK_PUSH_Crt), &push);
+        vkCmdPushConstants(cmd_buf, r_vk_pipeline_set()->crt.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(R_VK_PUSH_Crt), &push);
 
         // bind pipeline
-        vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.crt.h);
+        vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, r_vk_pipeline_set()->crt.h);
 
         // begin drawing
         vkCmdBeginRendering(cmd_buf, &render_info);
 
         // bind stage color descriptor
-        vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.crt.layout, 0, 1, &render_targets->stage_color_ds.h, 0, NULL);
+        vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, r_vk_pipeline_set()->crt.layout, 0, 1, &rt_set->stage_color_ds.h, 0, NULL);
 
         vkCmdDraw(cmd_buf, 4, 1, 0, 0);
 
         // end drawing
         vkCmdEndRendering(cmd_buf);
 
-        r_vk_image_transition(cmd_buf, render_targets->scratch_color_image.h,
+        r_vk_image_transition(cmd_buf, rt_set->scratch_color_image.h,
                               .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                               .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                               .dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
                               .dst_access_flag = VK_ACCESS_TRANSFER_READ_BIT);
-        r_vk_image_transition(cmd_buf, render_targets->stage_color_image.h,
+        r_vk_image_transition(cmd_buf, rt_set->stage_color_image.h,
                               .src_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                               .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
@@ -6494,8 +6463,8 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
         // copy scratch image to stage image
         {
-          VkImage src = render_targets->scratch_color_image.h;
-          VkImage dst = render_targets->stage_color_image.h;
+          VkImage src = rt_set->scratch_color_image.h;
+          VkImage dst = rt_set->stage_color_image.h;
           VkImageCopy copy_region = {0};
           copy_region.srcSubresource = (VkImageSubresourceLayers){
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -6511,9 +6480,9 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
             .layerCount = 1,
           };
           copy_region.dstOffset = (VkOffset3D){0,0,0};
-          copy_region.extent = (VkExtent3D){render_targets->scratch_color_image.extent.width, render_targets->scratch_color_image.extent.height, 1};
+          copy_region.extent = (VkExtent3D){rt_set->scratch_color_image.extent.width, rt_set->scratch_color_image.extent.height, 1};
           vkCmdCopyImage(cmd_buf, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
-          r_vk_image_transition(cmd_buf, render_targets->stage_color_image.h,
+          r_vk_image_transition(cmd_buf, rt_set->stage_color_image.h,
                                 .src_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                 .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                 .src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -6531,10 +6500,10 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         //////////////////////////////// 
         //~ Unpack Parameters
 
-        R_VK_Pipeline *bloom_down_pipeline = &wnd->pipelines.bloom_down;
-        R_VK_Pipeline *bloom_up_pipeline = &wnd->pipelines.bloom_up;
+        R_VK_Pipeline *bloom_down_pipeline = &r_vk_pipeline_set()->bloom_down;
+        R_VK_Pipeline *bloom_up_pipeline = &r_vk_pipeline_set()->bloom_up;
 
-        R_VK_Image *rt = &render_targets->stage_color_image;
+        R_VK_Image *rt = &rt_set->stage_color_image;
         uint32_t base_width = rt->extent.width;
         uint32_t base_height = rt->extent.height;
 
@@ -6549,7 +6518,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         // FIXME: ReadMip[i]: COLOR_ATTACHMENT -> SHADER_READ
         // FIXME: WriteMip[i]: UNDEFINED -> COLOR_ATTACHMENT
         VkImageView *mip_views = rt->views;
-        R_VK_DescriptorSet *mip_descriptors = render_targets->stage_color_dss;
+        R_VK_DescriptorSet *mip_descriptors = rt_set->stage_color_dss;
 
         for(U64 i = 0; i < 5; ++i)
         {
@@ -6722,6 +6691,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
       }break;
       case R_PassKind_Geo2D:
       {
+#if 0
         ProfBegin("geo2d pass");
         Assert(geo2d_pass_index < R_MAX_GEO2D_PASS);
 
@@ -6758,8 +6728,8 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         Vec2F32 viewport_dim = dim_2f32(params->viewport);
         if(viewport_dim.x == 0 || viewport_dim.y == 0)
         {
-          viewport.width  = render_targets->stage_color_image.extent.width;
-          viewport.height = render_targets->stage_color_image.extent.height;
+          viewport.width  = rt_set->stage_color_image.extent.width;
+          viewport.height = rt_set->stage_color_image.extent.height;
         }
         else
         {
@@ -6774,20 +6744,20 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
         VkRect2D scissor = {0};
         scissor.offset = (VkOffset2D){0, 0};
-        scissor.extent = render_targets->stage_color_image.extent;
+        scissor.extent = rt_set->stage_color_image.extent;
         vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
 
         /////////////////////////////////////////////////////////////////////////////////
         // forward pass
 
-        r_vk_image_transition(frame->cmd_buf, render_targets->geo2d_color_image.h,
+        r_vk_image_transition(frame->cmd_buf, rt_set->geo2d_color_image.h,
                               .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
                               .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                               .src_access_flag = VK_ACCESS_SHADER_READ_BIT,
                               .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                               .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
-        r_vk_image_transition(frame->cmd_buf, render_targets->edge_image.h,
+        r_vk_image_transition(frame->cmd_buf, rt_set->edge_image.h,
                               .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
                               .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
@@ -6802,20 +6772,20 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
         VkRenderingAttachmentInfo color_attachment_infos[3] = {0};
         color_attachment_infos[0].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        color_attachment_infos[0].imageView = render_targets->geo2d_color_image.view;
+        color_attachment_infos[0].imageView = rt_set->geo2d_color_image.view;
         color_attachment_infos[0].imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
         color_attachment_infos[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color_attachment_infos[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         color_attachment_infos[0].clearValue = clear_colors[0];
 
         color_attachment_infos[1].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        color_attachment_infos[1].imageView = render_targets->stage_id_image.view;
+        color_attachment_infos[1].imageView = rt_set->stage_id_image.view;
         color_attachment_infos[1].imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
         color_attachment_infos[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
         color_attachment_infos[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 
         color_attachment_infos[2].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        color_attachment_infos[2].imageView = render_targets->edge_image.view;
+        color_attachment_infos[2].imageView = rt_set->edge_image.view;
         color_attachment_infos[2].imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
         color_attachment_infos[2].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color_attachment_infos[2].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -6825,7 +6795,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         // The render area defiens where shader loads and stores will take place
         // The pixels outside this region will have undefined values
         render_info.renderArea.offset = (VkOffset2D){0, 0};
-        render_info.renderArea.extent = wnd->render_targets->stage_color_image.extent;
+        render_info.renderArea.extent = wnd->rt_set->stage_color_image.extent;
         render_info.layerCount = 1;
         render_info.colorAttachmentCount = ArrayCount(color_attachment_infos);
         render_info.pColorAttachments = color_attachment_infos;
@@ -6897,7 +6867,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         /////////////////////////////////////////////////////////////////////////////////
         // composite to the main staging buffer
 
-        r_vk_image_transition(frame->cmd_buf, render_targets->geo2d_color_image.h,
+        r_vk_image_transition(frame->cmd_buf, rt_set->geo2d_color_image.h,
                               .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -6907,7 +6877,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
         {
           VkRenderingAttachmentInfo color_attachment_info = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
-          color_attachment_info.imageView = render_targets->stage_color_image.view;
+          color_attachment_info.imageView = rt_set->stage_color_image.view;
           color_attachment_info.imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
           color_attachment_info.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
           color_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -6916,7 +6886,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           // The render area defiens where shader loads and stores will take place
           // The pixels outside this region will have undefined values
           render_info.renderArea.offset = (VkOffset2D){0, 0};
-          render_info.renderArea.extent = wnd->render_targets->stage_color_image.extent;
+          render_info.renderArea.extent = rt_set->stage_color_image.extent;
           render_info.layerCount = 1;
           render_info.colorAttachmentCount = 1;
           render_info.pColorAttachments = &color_attachment_info;
@@ -6924,34 +6894,35 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           // begin drawing
           vkCmdBeginRendering(cmd_buf, &render_info);
 
-          vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.composite.h);
+          vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, r_vk_pipeline_set()->composite.h);
 
           // Viewport and scissor
           VkViewport viewport = {0};
           viewport.x        = 0.0f;
           viewport.y        = 0.0f;
-          viewport.width    = render_targets->stage_color_image.extent.width;
-          viewport.height   = render_targets->stage_color_image.extent.height;
+          viewport.width    = rt_set->stage_color_image.extent.width;
+          viewport.height   = rt_set->stage_color_image.extent.height;
           viewport.minDepth = 0.0f;
           viewport.maxDepth = 1.0f;
           vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
           // Setup scissor rect
           VkRect2D scissor = {0};
           scissor.offset = (VkOffset2D){0, 0};
-          scissor.extent = render_targets->stage_color_image.extent;
+          scissor.extent = rt_set->stage_color_image.extent;
           vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
           // Bind stage color descriptor
-          vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, wnd->pipelines.composite.layout, 0, 1, &render_targets->geo2d_color_ds.h, 0, NULL);
+          vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, r_vk_pipeline_set()->composite.layout, 0, 1, &rt_set->geo2d_color_ds.h, 0, NULL);
           vkCmdDraw(cmd_buf, 4, 1, 0, 0);
 
           // end drawing
           vkCmdEndRendering(cmd_buf);
         }
-        geo2d_pass_index++;
         ProfEnd();
+#endif
       }break;
       case R_PassKind_Geo3D: 
       {
+#if 0
         ProfBegin("geo3d pass");
         Assert(geo3d_pass_index < R_MAX_GEO3D_PASS);
 
@@ -6959,7 +6930,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         R_PassParams_Geo3D *params = pass->params_geo3d;
         R_BatchGroup3DMap *mesh_group_map = &params->mesh_batches;
 
-        R_VK_RenderTargets *render_targets = wnd->render_targets;
+        R_VK_RenderTargetSet *rt_set = wnd->rt_set;
 
         // Pre-compute some inverse
         Mat4x4F32 proj_inv = inverse_4x4f32(params->projection);
@@ -7124,8 +7095,8 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         Vec2F32 viewport_dim = dim_2f32(params->viewport);
         if(viewport_dim.x == 0 || viewport_dim.y == 0)
         {
-          viewport.width  = render_targets->stage_color_image.extent.width;
-          viewport.height = render_targets->stage_color_image.extent.height;
+          viewport.width  = rt_set->stage_color_image.extent.width;
+          viewport.height = rt_set->stage_color_image.extent.height;
         }
         else
         {
@@ -7140,7 +7111,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
         VkRect2D scissor = {0};
         scissor.offset = (VkOffset2D){0, 0};
-        scissor.extent = render_targets->stage_color_image.extent;
+        scissor.extent = rt_set->stage_color_image.extent;
         vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
 
         /////////////////////////////////////////////////////////////////////////////////
@@ -7150,7 +7121,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         if(!params->omit_light)
         {
           // geo3d pre_depth_image: undefined => depth
-          r_vk_image_transition(cmd_buf, render_targets->geo3d_pre_depth_image.h,
+          r_vk_image_transition(cmd_buf, rt_set->geo3d_pre_depth_image.h,
                                 .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
                                 .dst_layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                                 .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
@@ -7169,7 +7140,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
             VkRenderingAttachmentInfo depth_attachment_infos[1] = {0};
             depth_attachment_infos[0].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            depth_attachment_infos[0].imageView = render_targets->geo3d_pre_depth_image.view;
+            depth_attachment_infos[0].imageView = rt_set->geo3d_pre_depth_image.view;
             depth_attachment_infos[0].imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
             depth_attachment_infos[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
             depth_attachment_infos[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -7177,7 +7148,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
             VkRenderingInfo render_info = { VK_STRUCTURE_TYPE_RENDERING_INFO };
             render_info.renderArea.offset = (VkOffset2D){0, 0};
-            render_info.renderArea.extent = wnd->render_targets->stage_color_image.extent;
+            render_info.renderArea.extent = wnd->rt_set->stage_color_image.extent;
             render_info.layerCount = 1;
             render_info.colorAttachmentCount = 0;
             render_info.pDepthAttachment = depth_attachment_infos;
@@ -7240,8 +7211,8 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
             Vec2F32 viewport_dim = dim_2f32(params->viewport);
             if(viewport_dim.x == 0 || viewport_dim.y == 0)
             {
-              viewport_dim.x = render_targets->stage_color_image.extent.width;
-              viewport_dim.y = render_targets->stage_color_image.extent.height;
+              viewport_dim.x = rt_set->stage_color_image.extent.width;
+              viewport_dim.y = rt_set->stage_color_image.extent.height;
             }
             viewport_dim.x = AlignPow2((U64)ceil_f32(viewport_dim.x), R_VK_TILE_SIZE);
             viewport_dim.y = AlignPow2((U64)ceil_f32(viewport_dim.y), R_VK_TILE_SIZE);
@@ -7284,7 +7255,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           // light culling compute pass
 
           // pre_depth_image: color_output => shader_read
-          r_vk_image_transition(frame->cmd_buf, render_targets->geo3d_pre_depth_image.h,
+          r_vk_image_transition(frame->cmd_buf, rt_set->geo3d_pre_depth_image.h,
                                 .src_layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                                 .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                 .src_stage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
@@ -7314,7 +7285,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
             // zpre
             vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE,
                                     pipeline->layout, 2, 1,
-                                    &render_targets->geo3d_pre_depth_ds.h, 0, 0);
+                                    &rt_set->geo3d_pre_depth_ds.h, 0, 0);
             // tiles
             vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE,
                                     pipeline->layout, 3, 1,
@@ -7340,7 +7311,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         // TODO(XXX): missing buffer barrier for compute shader to be finished
 
         // geo3d_color_image: undefined => color_output
-        r_vk_image_transition(frame->cmd_buf, render_targets->geo3d_color_image.h,
+        r_vk_image_transition(frame->cmd_buf, rt_set->geo3d_color_image.h,
                               .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
                               .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
@@ -7348,7 +7319,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
                               .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                               .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
         // geo3d_normal_depth_image: undefined => color_output
-        r_vk_image_transition(frame->cmd_buf, render_targets->geo3d_normal_depth_image.h,
+        r_vk_image_transition(frame->cmd_buf, rt_set->geo3d_normal_depth_image.h,
                               .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
                               .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
@@ -7375,27 +7346,27 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
           VkRenderingAttachmentInfo attachment_infos[4] = {0};
           attachment_infos[0].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-          attachment_infos[0].imageView = render_targets->geo3d_color_image.view;
+          attachment_infos[0].imageView = rt_set->geo3d_color_image.view;
           attachment_infos[0].imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
           attachment_infos[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
           attachment_infos[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
           attachment_infos[0].clearValue = clear_colors[0];
 
           attachment_infos[1].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-          attachment_infos[1].imageView = render_targets->geo3d_normal_depth_image.view;
+          attachment_infos[1].imageView = rt_set->geo3d_normal_depth_image.view;
           attachment_infos[1].imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
           attachment_infos[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
           attachment_infos[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
           attachment_infos[1].clearValue = clear_colors[1];
 
           attachment_infos[2].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-          attachment_infos[2].imageView = render_targets->stage_id_image.view;
+          attachment_infos[2].imageView = rt_set->stage_id_image.view;
           attachment_infos[2].imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
           attachment_infos[2].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
           attachment_infos[2].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 
           attachment_infos[3].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-          attachment_infos[3].imageView = render_targets->geo3d_depth_image.view;
+          attachment_infos[3].imageView = rt_set->geo3d_depth_image.view;
           attachment_infos[3].imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
           attachment_infos[3].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
           attachment_infos[3].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -7403,7 +7374,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
           VkRenderingInfo render_info = { VK_STRUCTURE_TYPE_RENDERING_INFO };
           render_info.renderArea.offset = (VkOffset2D){0, 0};
-          render_info.renderArea.extent = wnd->render_targets->stage_color_image.extent;
+          render_info.renderArea.extent = wnd->rt_set->stage_color_image.extent;
           render_info.layerCount = 1;
           render_info.colorAttachmentCount = 3;
           render_info.pColorAttachments = attachment_infos;
@@ -7524,7 +7495,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         // Composite to the main staging buffer
 
         // geo3d_color_image: color_output => shader_read
-        r_vk_image_transition(frame->cmd_buf, render_targets->geo3d_color_image.h,
+        r_vk_image_transition(frame->cmd_buf, rt_set->geo3d_color_image.h,
                               .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -7532,7 +7503,7 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
                               .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                               .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
         // geo3d_normal_depth_image: color_output => shader_read
-        r_vk_image_transition(frame->cmd_buf, render_targets->geo3d_normal_depth_image.h,
+        r_vk_image_transition(frame->cmd_buf, rt_set->geo3d_normal_depth_image.h,
                               .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -7545,14 +7516,14 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
 
           VkRenderingAttachmentInfo attachment_infos[1] = {0};
           attachment_infos[0].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-          attachment_infos[0].imageView = render_targets->stage_color_image.view;
+          attachment_infos[0].imageView = rt_set->stage_color_image.view;
           attachment_infos[0].imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
           attachment_infos[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
           attachment_infos[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 
           VkRenderingInfo render_info = { VK_STRUCTURE_TYPE_RENDERING_INFO };
           render_info.renderArea.offset = (VkOffset2D){0, 0};
-          render_info.renderArea.extent = wnd->render_targets->stage_color_image.extent;
+          render_info.renderArea.extent = wnd->rt_set->stage_color_image.extent;
           render_info.layerCount = 1;
           render_info.colorAttachmentCount = 1;
           render_info.pColorAttachments = attachment_infos;
@@ -7565,19 +7536,19 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
           VkViewport viewport = {0};
           viewport.x        = 0.0f;
           viewport.y        = 0.0f;
-          viewport.width    = render_targets->stage_color_image.extent.width;
-          viewport.height   = render_targets->stage_color_image.extent.height;
+          viewport.width    = rt_set->stage_color_image.extent.width;
+          viewport.height   = rt_set->stage_color_image.extent.height;
           viewport.minDepth = 0.0f;
           viewport.maxDepth = 1.0f;
           vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
           // Setup scissor rect
           VkRect2D scissor = {0};
           scissor.offset = (VkOffset2D){0, 0};
-          scissor.extent = render_targets->stage_color_image.extent;
+          scissor.extent = rt_set->stage_color_image.extent;
           vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
           // Bind stage color descriptor
-          vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout, 0, 1, &render_targets->geo3d_color_ds.h, 0, NULL);
-          vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout, 1, 1, &render_targets->geo3d_normal_depth_ds.h, 0, NULL);
+          vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout, 0, 1, &rt_set->geo3d_color_ds.h, 0, NULL);
+          vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout, 1, 1, &rt_set->geo3d_normal_depth_ds.h, 0, NULL);
           vkCmdDraw(cmd_buf, 4, 1, 0, 0);
 
           // end rendering
@@ -7585,14 +7556,11 @@ r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes)
         }
         geo3d_pass_index++;
         ProfEnd();
+#endif
       }break;
       default: {InvalidPath;}break;
     }
   }
 
-  wnd->ui_group_index = ui_group_index;
-  wnd->ui_pass_index = ui_pass_index;
-  wnd->geo2d_pass_index = geo2d_pass_index;
-  wnd->geo3d_pass_index = geo3d_pass_index;
   ProfEnd();
 }

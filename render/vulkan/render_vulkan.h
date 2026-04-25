@@ -19,7 +19,7 @@
 // waiting a lot, adding frames of latency Generally extra latency isn't desired
 #define R_VK_MAX_FRAMES_IN_FLIGHT 1
 #define R_VK_MAX_VIEWS_PER_IMAGE 6
-#define R_VK_STAGING_IN_FLIGHT_COUNT 2
+// #define R_VK_STAGING_IN_FLIGHT_COUNT 2
 // support max 4K with 32x32 sized tile
 #define R_VK_TILE_SIZE 32
 #define R_VK_MAX_TILES_PER_PASS ((3840*2160)/(R_VK_TILE_SIZE*R_VK_TILE_SIZE))
@@ -129,6 +129,7 @@ typedef enum R_VK_DescriptorSetKind
 
 typedef enum R_VK_PipelineKind
 {
+  R_VK_PipelineKind_GFX_Null = -1,
   // gfx pipeline
   R_VK_PipelineKind_GFX_Rect,
   // R_VK_PipelineKind_GFX_Blur,
@@ -375,6 +376,7 @@ struct R_VK_Image
 typedef struct R_VK_Swapchain R_VK_Swapchain;
 struct R_VK_Swapchain
 {
+  R_VK_Swapchain *next;
   VkSwapchainKHR h;
   VkExtent2D extent;
   VkFormat format;
@@ -515,20 +517,6 @@ struct R_VK_Pipeline
   VkPipelineLayout layout;
 };
 
-typedef struct R_VK_Buffer R_VK_Buffer;
-struct R_VK_Buffer
-{
-  R_VK_Buffer *next;
-  U64 generation;
-
-  VkBuffer h;
-  R_VK_Memory *memory;
-
-  R_ResourceKind kind; // NOTE(k): used for application side, we don't really need this internally
-
-  U64 size;
-};
-
 typedef struct R_VK_DescriptorSetLayout R_VK_DescriptorSetLayout;
 struct R_VK_DescriptorSetLayout
 {
@@ -554,23 +542,38 @@ struct R_VK_DescriptorSet
   R_VK_DescriptorSetPool *pool;
 };
 
-// FIXME: we should remove UBOBuffer and SBOBuffer types, just create BufferArray or something else 
-typedef struct R_VK_UBOBuffer R_VK_UBOBuffer;
-struct R_VK_UBOBuffer
+typedef struct R_VK_Buffer R_VK_Buffer;
+struct R_VK_Buffer
 {
-  R_VK_Buffer buffer;
-  R_VK_DescriptorSet set;
-  U64 unit_count;
-  U64 stride;
-};
+  R_VK_Buffer *next;
+  U64 generation;
 
-typedef struct R_VK_SBOBuffer R_VK_SBOBuffer;
-struct R_VK_SBOBuffer
-{
-  R_VK_Buffer buffer;
-  R_VK_DescriptorSet set;
-  U64 unit_count;
-  U64 stride;
+  struct R_VK_BufferPoolSlot *pool_slot;
+
+  VkBuffer h;
+  R_VK_Memory *memory;
+  R_ResourceKind kind; // NOTE(k): used for application side, we don't really need this internally
+  U64 size;
+
+  // Staging info (image or buffer copy)
+  union
+  {
+    struct
+    {
+      R_VK_Image *dst;
+      Vec3S32 offset;
+      Vec3S32 extent;
+    } image;
+    struct
+    {
+      R_VK_Buffer *dst;
+      VkBufferCopy copy_region;
+    } buffer;
+  } staging;
+
+  // For ubo, sbo buffers
+  // FIXME: use pointer instead
+  R_VK_DescriptorSet desc_set;
 };
 
 typedef struct R_VK_Tex2D R_VK_Tex2D;
@@ -584,162 +587,158 @@ struct R_VK_Tex2D
   R_Tex2DSampleKind sample_kind;
 };
 
-typedef struct R_VK_RenderTargets R_VK_RenderTargets;
-struct R_VK_RenderTargets
+typedef enum R_VK_BufferPoolKind
 {
-  R_VK_RenderTargets *next;
-  // NOTE(k): If swapchain image format changed, we would need to recreate renderpass and pipeline
-  //          If only extent of swapchain image changed, we could just recrete the swapchain
-  R_VK_Swapchain     swapchain;
+  R_VK_BufferPoolKind_Instance,
+  R_VK_BufferPoolKind_UBO,
+  R_VK_BufferPoolKind_Scratch,
+  R_VK_BufferPoolKind_COUNT,
+} R_VK_BufferPoolKind;
 
-  R_VK_Image         stage_color_image;
-  R_VK_DescriptorSet stage_color_ds;
-  R_VK_DescriptorSet stage_color_dss[6]; // mutiple mip level with linear viewer (for bloom pass)
-  R_VK_Image         stage_id_image;
-  R_VK_Buffer        stage_id_cpu;
+typedef struct R_VK_BufferPoolSlot R_VK_BufferPoolSlot;
+struct R_VK_BufferPoolSlot
+{
+  R_VK_Buffer *first_buffer;
+};
+
+read_only global U64 r_vk_buffer_chunk_sizes[] =
+{
+  256ULL,                // 0.25 KB (Minimum Vulkan alignment)
+  1024ULL,               // 1 KB
+  4096ULL,               // 4 KB
+  16384ULL,              // 16 KB
+  65536ULL,              // 64 KB
+  262144ULL,             // 256 KB
+  1048576ULL,            // 1 MB
+  4194304ULL,            // 4 MB
+  16777216ULL,           // 16 MB
+  67108864ULL,           // 64 MB
+  268435456ULL,          // 256 MB
+  1073741824ULL,         // 1 GB
+  // 0xffffffffffffffffull, // Fallback for huge manual allocations
+};
+
+typedef struct R_VK_BufferPool R_VK_BufferPool;
+struct R_VK_BufferPool
+{
+  R_VK_BufferPoolKind kind;
+  R_VK_BufferPoolSlot slots[ArrayCount(r_vk_buffer_chunk_sizes)];
+};
+
+typedef struct R_VK_RenderTargetSet R_VK_RenderTargetSet;
+struct R_VK_RenderTargetSet
+{
+  R_VK_RenderTargetSet *next;
+
+  R_VK_Image           stage_color_image;
+  R_VK_DescriptorSet   stage_color_ds;
+  R_VK_DescriptorSet   stage_color_dss[6]; // mutiple mip level with linear viewer (for bloom pass)
+  R_VK_Image           stage_id_image;
+  R_VK_Buffer          stage_id_cpu;
   // scratch
-  R_VK_Image         scratch_color_image;
-  R_VK_DescriptorSet scratch_color_ds;
+  R_VK_Image           scratch_color_image;
+  R_VK_DescriptorSet   scratch_color_ds;
   // edge
-  R_VK_Image         edge_image;
-  R_VK_DescriptorSet edge_ds;
+  R_VK_Image           edge_image;
+  R_VK_DescriptorSet   edge_ds;
   // 2d
-  R_VK_Image         geo2d_color_image;
-  R_VK_DescriptorSet geo2d_color_ds;
+  R_VK_Image           geo2d_color_image;
+  R_VK_DescriptorSet   geo2d_color_ds;
 
   // 3d
   // TODO(XXX): this is a mess, cleanup unused image, also add toon shading post pass
-  R_VK_Image         geo3d_color_image;
-  R_VK_DescriptorSet geo3d_color_ds;
-  R_VK_Image         geo3d_normal_depth_image;
-  R_VK_DescriptorSet geo3d_normal_depth_ds;
-  R_VK_Image         geo3d_depth_image;
-  R_VK_Image         geo3d_pre_depth_image;
-  R_VK_DescriptorSet geo3d_pre_depth_ds;
+  R_VK_Image           geo3d_color_image;
+  R_VK_DescriptorSet   geo3d_color_ds;
+  R_VK_Image           geo3d_normal_depth_image;
+  R_VK_DescriptorSet   geo3d_normal_depth_ds;
+  R_VK_Image           geo3d_depth_image;
+  R_VK_Image           geo3d_pre_depth_image;
+  R_VK_DescriptorSet   geo3d_pre_depth_ds;
 
-  U64                rc;
-  U64                deprecated_at_frame;
+  U64                  last_touched_frame_index;
+};
+
+typedef struct R_VK_FrameStage R_VK_FrameStage;
+struct R_VK_FrameStage
+{
+  // Stage info (ubo, inst)
+  R_VK_Buffer *first_staged_buffer;
+  R_VK_Buffer *last_staged_buffer;
+
+  // Staging buffers
+  R_VK_Buffer *first_staging_buffer;
+  R_VK_Buffer *last_staging_buffer;
+
+  // Submitions darray (per-frame, they all should have same length)
+  VkCommandBuffer *command_buffers;
+  VkSemaphore *wait_semaphores;
+  VkPipelineStageFlags *wait_stages;
+  VkSemaphore *signal_semaphores;
+  struct R_VK_Window **windows_to_present;
 };
 
 typedef struct R_VK_Frame R_VK_Frame;
 struct R_VK_Frame
 {
-  VkSemaphore img_acq_sem;
   VkFence inflt_fence;
+  VkCommandBuffer cmd_buffer;
+
+  // Stages (double-buffered)
+  R_VK_FrameStage stages[2];
+};
+
+typedef struct R_VK_PipelineSet R_VK_PipelineSet;
+struct R_VK_PipelineSet
+{
+  R_VK_Pipeline rect;
+  // R_VK_Pipeline blur;
+  R_VK_Pipeline noise;
+  R_VK_Pipeline edge;
+  R_VK_Pipeline crt;
+  R_VK_Pipeline bloom_up;
+  R_VK_Pipeline bloom_down;
+  struct
+  {
+    R_VK_Pipeline forward[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT];
+  } geo2d;
+  struct
+  {
+    R_VK_Pipeline tile_frustum;
+    R_VK_Pipeline light_culling;
+    R_VK_Pipeline z_pre[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT];
+    R_VK_Pipeline debug[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT];
+    R_VK_Pipeline forward[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT];
+    R_VK_Pipeline composite;
+  } geo3d;
+  R_VK_Pipeline composite;
+  R_VK_Pipeline composite_additive;
+  R_VK_Pipeline finalize;
+};
+
+enum { 
+  R_VK_PIPELINESET_COUNT = sizeof(R_VK_PipelineSet) / sizeof(R_VK_Pipeline) 
+}; 
+
+typedef struct R_VK_WindowFrame R_VK_WindowFrame;
+struct R_VK_WindowFrame
+{
+  R_VK_RenderTargetSet *rt_set;
+  VkCommandBuffer cmd_buffer;
+  VkSemaphore img_acq_sem;
   U32 img_idx;
-  VkCommandBuffer cmd_buf;
-
-  R_VK_RenderTargets *render_targets_ref;
-
-  // UBO buffer and descriptor set
-  R_VK_UBOBuffer ubo_buffers[R_VK_UBOTypeKind_COUNT];
-
-  // Storage buffer and descriptor set
-  R_VK_SBOBuffer sbo_buffers[R_VK_SBOTypeKind_COUNT];
-
-  // Instance buffer
-  R_VK_Buffer inst_buffer_rect[R_MAX_RECT_PASS];
-  R_VK_Buffer inst_buffer_mesh2d[R_MAX_GEO2D_PASS];
-  R_VK_Buffer inst_buffer_mesh3d[R_MAX_GEO3D_PASS];
 };
 
 typedef struct R_VK_Window R_VK_Window;
 struct R_VK_Window
 {
-  // allocation link
   U64 generation;
   R_VK_Window *next;
+  R_VK_Window *submit_next;
 
   OS_Handle os_wnd;
-
   R_VK_Surface surface;
-  R_VK_RenderTargets *render_targets;
-  union
-  {
-    struct
-    {
-      R_VK_Pipeline rect;
-      // R_VK_Pipeline blur;
-      R_VK_Pipeline noise;
-      R_VK_Pipeline edge;
-      R_VK_Pipeline crt;
-      R_VK_Pipeline bloom_up;
-      R_VK_Pipeline bloom_down;
-      struct
-      {
-        R_VK_Pipeline forward[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT];
-      } geo2d;
-      struct
-      {
-        R_VK_Pipeline tile_frustum;
-        R_VK_Pipeline light_culling;
-        R_VK_Pipeline z_pre[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT];
-        R_VK_Pipeline debug[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT];
-        R_VK_Pipeline forward[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT];
-        R_VK_Pipeline composite;
-      } geo3d;
-      R_VK_Pipeline composite;
-      R_VK_Pipeline composite_additive;
-      R_VK_Pipeline finalize;
-    };
-    R_VK_Pipeline arr[R_GeoTopologyKind_COUNT * R_GeoPolygonKind_COUNT * 4 + 12];
-  } pipelines;
-
-  R_VK_Frame frames[R_VK_MAX_FRAMES_IN_FLIGHT];
-  U64 curr_frame_idx;
-
-  // buffer index/offset per frame (for dynamic buffer)
-  U64 ui_group_index;   // ubo is per ui group
-  U64 ui_pass_index;    // inst buffer is per ui pass
-  U64 geo2d_pass_index; // ubo and inst buffer is per geo2d pass
-  U64 geo3d_pass_index; // ubo and inst buffer is per geo3d pass
-};
-
-////////////////////////////////
-//~ Staging Ring Buffer
-
-typedef struct R_VK_StagingRing R_VK_StagingRing;
-struct R_VK_StagingRing
-{
-  VkBuffer buffer;
-  VkDeviceMemory memory;
-  void *mapped;
-
-  U64 cap;
-  U64 head; // next write offset
-  U64 tail; // oldest in-flight offset (safe to reuse before this) 
-};
-
-typedef struct R_VK_StagingSlice R_VK_StagingSlice;
-struct R_VK_StagingSlice
-{
-  U64 offset;
-  U64 size;
-  void *ptr; // mapped + offset
-};
-
-// per frame
-typedef struct R_VK_StagingBatch R_VK_StagingBatch;
-struct R_VK_StagingBatch
-{
-  // per-upload state
-  U64 size;
-  U64 start;
-  U64 end;
-  B32 submitted;
-  // per-frame artifacts (darray)
-  R_VK_Image **images;
-};
-
-typedef struct R_VK_Stage R_VK_Stage;
-struct R_VK_Stage
-{
-  R_VK_StagingRing ring;
-  VkCommandBuffer cmds[R_VK_STAGING_IN_FLIGHT_COUNT];
-  VkFence fences[R_VK_STAGING_IN_FLIGHT_COUNT];
-  R_VK_StagingBatch batches[R_VK_STAGING_IN_FLIGHT_COUNT];
-  U64 idx; // in-flight rotation index
-  U64 last_touch_frame_index;
+  R_VK_Swapchain *swapchain;
+  R_VK_WindowFrame frames[R_VK_MAX_FRAMES_IN_FLIGHT];
 };
 
 ////////////////////////////////
@@ -775,32 +774,34 @@ struct R_VK_State
   VkShaderModule                      fshad_modules[R_VK_FShadKind_COUNT];
   VkShaderModule                      cshad_modules[R_VK_CShadKind_COUNT];
 
-  // FIXME: clean it up
   VkCommandPool                       cmd_pool;
-  // TODO(Next): deprecated, remove this ASAP
-  // For copying staging buffer or transition image layout
-  VkCommandBuffer                     oneshot_cmd_buf;
-
-  // FIXME: don't need it either, we need some kind of StageBatch here
-  R_VK_Stage                          stage;
 
   R_VK_MemoryAllocator                *allocator;
+  R_VK_BufferPool                     buffer_pools[R_VK_BufferPoolKind_COUNT];
 
   /* Resource free list */
   R_VK_Window                         *first_free_window;
   R_VK_Tex2D                          *first_free_tex2d;
   R_VK_Buffer                         *first_free_buffer;
-  R_VK_RenderTargets                  *first_free_render_targets;
+  R_VK_RenderTargetSet                *first_free_rt_set;
+  R_VK_Swapchain                      *first_free_swapchain;
   R_VK_DescriptorSetPool              *first_avail_ds_pool[R_VK_DescriptorSetKind_COUNT];
-  R_VK_RenderTargets                  *first_to_free_render_targets;
-  R_VK_RenderTargets                  *last_to_free_render_targets;
+  // Delayed free list
+  R_VK_RenderTargetSet                *first_to_free_rt_set;
+  R_VK_RenderTargetSet                *last_to_free_rt_set;
+  R_VK_Swapchain                      *first_to_free_swapchain;
+  R_VK_Swapchain                      *last_to_free_swapchain;
 
   // TODO(k): first_free_descriptor, we could update descriptor to point a new buffer or image/sampler
   // TODO(k): we may want to keep track of filled ds_pool
+  R_VK_PipelineSet                    pipeline_set;
+
+  /* Frame */
+  R_VK_Frame                          frames[R_VK_MAX_FRAMES_IN_FLIGHT];
+  U64                                 frame_index;
 
   /* Misc */
   R_Handle                            backup_texture;
-  U64                                 frame_index;
 
   /* Stack */
   R_VK_DeclStackNils;
@@ -813,11 +814,20 @@ struct R_VK_State
 global R_VK_State *r_vk_state = 0;
 
 ////////////////////////////////
+//~ Global Accessor/Mutator
+
+internal U64 r_vk_frame_index();
+internal R_VK_PipelineSet* r_vk_pipeline_set();
+internal Arena* r_vk_frame_arena();
+internal R_VK_Frame* r_vk_current_frame();
+
+////////////////////////////////
 //~ Window Functions
 
-internal R_Handle     r_vk_handle_from_window(R_VK_Window *window);
-internal R_VK_Window* r_vk_window_from_handle(R_Handle handle);
-internal void         r_vk_window_resize(R_VK_Window *window);
+internal R_Handle          r_vk_handle_from_window(R_VK_Window *window);
+internal R_VK_Window*      r_vk_window_from_handle(R_Handle handle);
+internal void              r_vk_window_resize(R_VK_Window *window);
+internal R_VK_WindowFrame* r_vk_frame_from_window(R_VK_Window *window);
 
 ////////////////////////////////
 //~ Tex2D Functions
@@ -838,21 +848,17 @@ internal R_Handle     r_vk_handle_from_buffer(R_VK_Buffer *buffer);
 #define r_vk_ldevice() (r_vk_state->logical_device)
 
 ////////////////////////////////
-//~ Stage Ring Buffer Functions
+//~ Stage Copy Operations
 
-internal void              r_vk_stage_init();
-internal R_VK_StagingSlice r_vk_staging_slice_from_size(U64 size, U64 alignment);
-internal U64               r_vk_free_size_from_staging_ring(U64 alignment);
-internal void              r_vk_stage_begin();
-internal void              r_vk_stage_end();
-internal void              r_vk_stage_bump();
-internal void              r_vk_stage_copy_image(void *src, U64 size, R_VK_Image *dst, Vec3S32 offset, Vec3S32 extent);
+internal void r_vk_stage_copy_image(void *src, U64 size, R_VK_Image *dst, Vec3S32 offset, Vec3S32 extent);
+internal void r_vk_stage_copy_buffer(void *src, U64 size, R_VK_Buffer *dst, VkBufferCopy *copy_region);
 
 ////////////////////////////////
 //~ Vulkan Resource Allocation
 
 //- swapchain
-internal R_VK_Swapchain        r_vk_swapchain(R_VK_Surface *surface, OS_Handle os_wnd, VkFormat format, VkColorSpaceKHR color_space, R_VK_Swapchain *old);
+internal R_VK_Swapchain*       r_vk_swapchain_alloc(R_VK_Surface *surface, OS_Handle os_wnd, VkFormat format, VkColorSpaceKHR color_space, R_VK_Swapchain *old);
+internal void                  r_vk_swapchain_release(R_VK_Swapchain *swapchain);
 internal void                  r_vk_format_for_swapchain(VkSurfaceFormatKHR *formats, U64 count, VkFormat *format, VkColorSpaceKHR *color_space);
 
 //- surface
@@ -866,22 +872,24 @@ internal void                  r_vk_memory_map(R_VK_Memory *memory);
 internal VkMemoryPropertyFlags r_vk_property_flags_from_memroy(R_VK_Memory *memory);
 
 //- buffer
-internal R_VK_UBOBuffer        r_vk_ubo_buffer_alloc(R_VK_UBOTypeKind kind, U64 unit_count);
-internal R_VK_SBOBuffer        r_vk_sbo_buffer_alloc(R_VK_SBOTypeKind kind, U64 unit_count);
-internal R_VK_Buffer*          r_vk_stage_buffer_from_size(U64 size);
+internal R_VK_Buffer*          r_vk_buffer_from_pool(R_VK_BufferPoolKind kind, U64 size);
+internal void                  r_vk_buffer_release_to_pool(R_VK_Buffer *buffer);
+// FIXME: release to buffer pool
+// FIXME: to be removed
+// internal R_VK_Buffer*          r_vk_stage_buffer_from_size(U64 size);
 internal void                  r_vk_buffer_release(R_VK_Buffer *buffer);
 
-//- render targets
-internal R_VK_RenderTargets*   r_vk_render_targets_alloc(OS_Handle os_wnd, R_VK_Surface *surface, R_VK_RenderTargets *old);
-internal void                  r_vk_render_targets_destroy(R_VK_RenderTargets *render_targets);
+//- render target set
+internal R_VK_RenderTargetSet* r_vk_render_target_set_alloc(OS_Handle os_wnd, R_VK_Surface *surface, VkExtent2D swapchain_extent);
+internal void                  r_vk_render_target_set_release(R_VK_RenderTargetSet *render_targets);
 
 //- descriptor
 internal void                  r_vk_descriptor_set_alloc(R_VK_DescriptorSetKind kind, U64 set_count, U64 cap, VkBuffer *buffers, VkImageView *image_views, VkSampler *sampler, R_VK_DescriptorSet *sets);
-internal void                  r_vk_descriptor_set_destroy(R_VK_DescriptorSet *set);
+internal void                  r_vk_descriptor_set_release(R_VK_DescriptorSet *set);
 
 //- sync primitives
 internal VkFence               r_vk_fence();
-internal VkSemaphore           r_vk_semaphore(VkDevice device);
+internal VkSemaphore           r_vk_semaphore();
 internal void                  r_vk_cleanup_unsafe_semaphore(VkQueue queue, VkSemaphore semaphore);
 
 //- sync helpers

@@ -218,9 +218,9 @@ dr_begin_frame()
 }
 
 internal void
-dr_submit_bucket(OS_Handle os_window, R_Handle r_window, DR_Bucket *bucket)
+dr_submit_bucket(R_Handle r_window, DR_Bucket *bucket)
 {
-  r_window_submit(os_window, r_window, &bucket->passes);
+  r_window_submit(r_window, &bucket->passes);
 }
 
 ////////////////////////////////
@@ -336,6 +336,8 @@ dr_rect(Rng2F32 dst, Vec4F32 color, F32 corner_radius, F32 border_thickness, F32
     node->params.transparency    = bucket->top_transparency->v;
   }
   R_Rect2DInst *inst = (R_Rect2DInst *)r_batch_list_push_inst(arena, &node->batches, 256);
+  // FIXME: we should also apply this to every rect pass draw primitive
+  rects->inst_count++;
 
   inst->dst                     = dst;
   inst->src                     = r2f32p(0, 0, 0, 0);
@@ -399,6 +401,8 @@ dr_img(Rng2F32 dst, Rng2F32 src, R_Handle texture, Vec4F32 color, F32 corner_rad
   }
 
   R_Rect2DInst *inst = (R_Rect2DInst *)r_batch_list_push_inst(arena, &node->batches, 256);
+  rects->inst_count++;
+
   inst->dst                     = dst;
   inst->src                     = src;
   inst->colors[Corner_00]       = color;
@@ -455,6 +459,7 @@ dr_line(Vec2F32 a, Vec2F32 b, Vec4F32 color, F32 line_thickness, F32 edge_softne
     node->params.transparency    = bucket->top_transparency->v;
   }
   R_Rect2DInst *inst = (R_Rect2DInst *)r_batch_list_push_inst(arena, &node->batches, 256);
+  rects->inst_count++;
 
   Rng2F32 dst = {.p0 = a, .p1 = b};
   if(dst.x0 > dst.x1) Swap(F32, dst.x0, dst.x1);

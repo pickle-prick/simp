@@ -242,6 +242,7 @@ struct R_BatchGroupRectList
   R_BatchGroupRectNode *first;
   R_BatchGroupRectNode *last;
   U64 count;
+  U64 inst_count;
 };
 
 typedef struct R_BatchGroup3DParams R_BatchGroup3DParams;
@@ -486,6 +487,6 @@ r_hook void              r_window_begin_frame(OS_Handle window, R_Handle window_
 r_hook Vec3F32           r_window_end_frame(OS_Handle window, R_Handle window_equip, Vec2F32 mouse_ptr);
 
 //- rjf: render pass submission
-r_hook void              r_window_submit(OS_Handle window, R_Handle window_equip, R_PassList *passes);
+r_hook void              r_window_submit(R_Handle window_equip, R_PassList *passes);
 
 #endif // RENDER_CORE_H
