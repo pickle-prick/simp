@@ -383,8 +383,9 @@ struct R_VK_Swapchain
   U32 image_count;
   VkImage images[8];
   VkImageView image_views[8];
-  // Semaphores that are waited on by QueuePresent are buffered based on the bumber of swapchain images
+  // Semaphores that are waited on by QueuePresent are buffered based on the number of swapchain images
   VkSemaphore submit_semaphores[8];
+  U64 last_touched_frame_index;
 };
 
 typedef struct R_VK_PhysicalDevice R_VK_PhysicalDevice;

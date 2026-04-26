@@ -49,16 +49,20 @@ return old_value;
 #if !BUILD_DEBUG
 #include "shader/crt_frag.spv.h"
 #include "shader/crt_vert.spv.h"
+#include "shader/bloom_down_vert.spv.h"
+#include "shader/bloom_down_frag.spv.h"
+#include "shader/bloom_up_vert.spv.h"
+#include "shader/bloom_up_frag.spv.h"
 #include "shader/edge_frag.spv.h"
 #include "shader/edge_vert.spv.h"
 #include "shader/finalize_frag.spv.h"
 #include "shader/finalize_vert.spv.h"
-#include "shader/geo2d_composite_frag.spv.h"
-#include "shader/geo2d_composite_vert.spv.h"
 #include "shader/geo2d_forward_frag.spv.h"
 #include "shader/geo2d_forward_vert.spv.h"
 #include "shader/geo3d_composite_frag.spv.h"
 #include "shader/geo3d_composite_vert.spv.h"
+#include "shader/composite_vert.spv.h"
+#include "shader/composite_frag.spv.h"
 #include "shader/geo3d_debug_frag.spv.h"
 #include "shader/geo3d_debug_vert.spv.h"
 #include "shader/geo3d_forward_frag.spv.h"
@@ -175,7 +179,7 @@ r_vk_window_resize(R_VK_Window *window)
     VkFormat swapchain_format;
     VkColorSpaceKHR swapchain_color_space;
     r_vk_format_for_swapchain(surface->formats, surface->format_count, &swapchain_format, &swapchain_color_space);
-    R_VK_Swapchain *next_swapchain = r_vk_swapchain_alloc(surface, window->os_wnd, swapchain_format, swapchain_color_space, 0);
+    R_VK_Swapchain *next_swapchain = r_vk_swapchain_alloc(surface, window->os_wnd, swapchain_format, swapchain_color_space, swapchain);
     // Push swapchain to to-free list
     SLLQueuePush(r_vk_state->first_to_free_swapchain, r_vk_state->last_to_free_swapchain, window->swapchain);
     window->swapchain = next_swapchain;
@@ -183,21 +187,16 @@ r_vk_window_resize(R_VK_Window *window)
     // Create rt_set for each frame
     for(U64 i = 0; i < R_VK_MAX_FRAMES_IN_FLIGHT; ++i)
     {
+      U64 frame_index = (i+r_vk_frame_index())%R_VK_MAX_FRAMES_IN_FLIGHT;
       R_VK_RenderTargetSet *next_rt_set  = r_vk_render_target_set_alloc(window->os_wnd, surface, next_swapchain->extent);
-      SLLQueuePush(r_vk_state->first_to_free_rt_set, r_vk_state->last_to_free_rt_set, window->frames[i].rt_set);
-      window->frames[i].rt_set = next_rt_set;
+      SLLQueuePush(r_vk_state->first_to_free_rt_set, r_vk_state->last_to_free_rt_set, window->frames[frame_index].rt_set);
+      window->frames[frame_index].rt_set = next_rt_set;
     }
   }
 
   // NOTE(k): if format is changed, we would also need to recreate the render pass
   // bool swapchain_format_changed = window->render_targets->swapchain.format != old_swapchain_format;
   // if(swapchain_format_changed)
-  // {
-  //   SLLStackPush(window->first_to_free_rendpass_grp, window->rendpass_grp);
-  //   window->rendpass_grp = r_vk_rendpass_grp(window, window->bag->swapchain.format, window->rendpass_grp);
-  // }
-  // // create framebuffers for this bag
-  // r_vk_rendpass_grp_submit(window->bag, window->rendpass_grp);
 
   ProfEnd();
 }
@@ -526,8 +525,6 @@ r_vk_swapchain_release(R_VK_Swapchain *swapchain)
     vkDestroyImageView(r_vk_ldevice()->h, swapchain->image_views[i], NULL);
 
     // TODO(XXX): we should be able to reuse these semaphores
-    // TODO(BUG): it's not safe to destroy semaphore here, fix it later
-    //            can't be called on VkSemaphore 0x4a000000004a that is currently in use by VkQueue
     vkDestroySemaphore(r_vk_ldevice()->h, swapchain->submit_semaphores[i], NULL);
   }
   vkDestroySwapchainKHR(r_vk_ldevice()->h, swapchain->h, NULL);
@@ -5258,6 +5255,23 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
     t = next;
   }
 
+  ProfScope("Destroy deprecated swapchain")
+  for(R_VK_Swapchain *swapchain = r_vk_state->first_to_free_swapchain, *next = 0;
+      swapchain != 0;
+      swapchain = next)
+  {
+    next = swapchain->next;
+    if((r_vk_state->frame_index-swapchain->last_touched_frame_index) > R_VK_MAX_FRAMES_IN_FLIGHT)
+    {
+      SLLQueuePop(r_vk_state->first_to_free_swapchain, r_vk_state->last_to_free_swapchain);
+      r_vk_swapchain_release(swapchain);
+    }
+    else
+    {
+      break;
+    }
+  }
+
   // Reset WindowFrame's command buffer
   VK_Assert(vkResetCommandBuffer(window_frame->cmd_buffer, 0));
 
@@ -5334,6 +5348,9 @@ r_window_end_frame(OS_Handle os_wnd, R_Handle window_equip, Vec2F32 mouse_ptr)
   R_VK_RenderTargetSet *rt_set = window_frame->rt_set;
   VkCommandBuffer cmd_buffer = window_frame->cmd_buffer;
   R_VK_Swapchain *swapchain = window->swapchain;
+
+  rt_set->last_touched_frame_index = r_vk_state->frame_index;
+  swapchain->last_touched_frame_index = r_vk_state->frame_index;
 
   // NOTE(k): stage_id_cpu buffer could be lagged by several frames
   // get point entity id
