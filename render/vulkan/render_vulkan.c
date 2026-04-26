@@ -248,216 +248,6 @@ r_vk_handle_from_buffer(R_VK_Buffer *buffer)
   return handle;
 }
 
-////////////////////////////////
-//~ Stage Ring Buffer Functions
-
-// FIXME: to be removed, this is not a robust solution for staging memory
-
-//internal void
-//r_vk_stage_init()
-//{
-//  R_VK_Stage *stage = &r_vk_state->stage;
-//  R_VK_PhysicalDevice *pdevice = r_vk_pdevice();
-//  R_VK_LogicalDevice *ldevice = r_vk_ldevice();
-//  VkDevice device = ldevice->h;
-//  // NOTE(k): can't set it to 0 on startup, it will causing conflict on first frame
-//  stage->last_touch_frame_index = max_U64;
-//
-//  // command pool & buffer
-//  VkCommandPool cp;
-//  VkCommandPoolCreateInfo cpci = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
-//  cpci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-//  cpci.queueFamilyIndex = pdevice->gfx_queue_family_index;
-//  VK_Assert(vkCreateCommandPool(device, &cpci, NULL, &cp));
-//
-//  // commands
-//  for(U64 i = 0; i < R_VK_STAGING_IN_FLIGHT_COUNT; i++)
-//  {
-//    VkCommandBuffer cmd;
-//    VkCommandBufferAllocateInfo cbai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
-//    cbai.commandPool = cp;
-//    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-//    cbai.commandBufferCount = 1;
-//    VK_Assert(vkAllocateCommandBuffers(device, &cbai, &cmd));
-//    stage->cmds[i] = cmd;
-//  }
-//
-//  // fences
-//  for(U64 i = 0; i < R_VK_STAGING_IN_FLIGHT_COUNT; i++)
-//  {
-//    stage->fences[i] = r_vk_fence();
-//  }
-//
-//  // init staging ring buffer
-//  {
-//    // TODO(Next): this one will use local mem, and it's not safe to use for large batch 
-//    U64 size = MB(512);
-//    R_VK_StagingRing *ring = &stage->ring;
-//
-//    VkBuffer buffer;
-//    VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-//    bci.size = size;
-//    bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-//    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-//    VK_Assert(vkCreateBuffer(device, &bci, NULL, &buffer));
-//
-//    VkMemoryRequirements mem_requirements;
-//    vkGetBufferMemoryRequirements(device, buffer, &mem_requirements);
-//
-//    VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-//    VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-//    mai.allocationSize = mem_requirements.size;
-//    mai.memoryTypeIndex = r_vk_memory_index_from_type_filer(mem_requirements.memoryTypeBits, properties);
-//
-//    VkDeviceMemory memory;
-//    VK_Assert(vkAllocateMemory(device, &mai, NULL, &memory));
-//    VK_Assert(vkBindBufferMemory(device, buffer, memory, 0));
-//
-//    void *mapped;
-//    VK_Assert(vkMapMemory(device, memory, 0, mem_requirements.size, 0, &mapped));
-//
-//    ring->buffer = buffer; 
-//    ring->memory = memory; 
-//    ring->mapped = mapped;
-//    ring->cap = size;
-//    ring->head = 0;
-//    ring->tail = 0;
-//  }
-//}
-
-// internal R_VK_StagingSlice
-// r_vk_staging_slice_from_size(U64 size, U64 alignment)
-// {
-//   R_VK_StagingSlice ret = {0};
-// 
-//   R_VK_StagingRing *ring = &r_vk_state->stage.ring;
-//   U64 aligned_head = AlignPow2(ring->head, alignment);
-//   if(ring->tail <= aligned_head)
-//   {
-//     // two free segments: [algined_head, cap] and [0, tail]
-//     if((ring->cap-aligned_head) >= size)
-//     {
-//       ret.offset = aligned_head;
-//       ret.size = size;
-//       ret.ptr = (U8*)(ring->mapped) + aligned_head;
-// 
-//       // update head
-//       ring->head = aligned_head+size;
-//       if(ring->head == ring->cap) ring->head = 0; // wrap if exact end
-//     }
-//     else if(ring->tail >= size)
-//     {
-//       // wrap
-//       ret.offset = 0;
-//       ret.size = size;
-//       ret.ptr = ring->mapped;
-//       ring->head = size;
-//     }
-//   }
-//   else
-//   {
-//     // single free segments: [aligned_head, tail]
-//     if(size <= (ring->tail-aligned_head))
-//     {
-//       ret.offset = aligned_head;
-//       ret.size = size;
-//       ret.ptr = (U8*)(ring->mapped)+aligned_head;
-//       ring->head = aligned_head+size;
-//     }
-//   }
-//   return ret;
-// }
-
-// internal U64
-// r_vk_free_size_from_staging_ring(U64 alignment)
-// {
-//   U64 size = 0;
-// 
-//   R_VK_StagingRing *ring = &r_vk_state->stage.ring;
-//   U64 aligned_head = AlignPow2(ring->head, alignment);
-// 
-//   // two free segments: [algined_head, cap] and [0, tail]
-//   if(ring->tail <= aligned_head)
-//   {
-//     size = Max(ring->cap-aligned_head, ring->tail);
-//   }
-//   // single free segments: [aligned_head, tail]
-//   else
-//   {
-//     size = ring->tail - aligned_head;
-//   }
-//   return size;
-// }
-
-// internal void
-// r_vk_stage_begin()
-// {
-//   R_VK_Stage *stage = &r_vk_state->stage;
-//   R_VK_StagingBatch *batch = &stage->batches[stage->idx];
-//   VkCommandBuffer cmd = stage->cmds[stage->idx];
-// 
-//   // wait for current batch to be ready
-//   do
-//   {
-//     r_vk_stage_bump();
-//   } while(batch->size != 0);
-// 
-//   // begin recording
-//   VkCommandBufferBeginInfo begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-//   begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
-//   begin_info.pInheritanceInfo = 0;
-//   // if the command buffer was already recorded once, then a call to vkBeginCommandBuffer will implicity reset it
-//   VK_Assert(vkBeginCommandBuffer(cmd, &begin_info));
-// 
-//   // bump stage frame index
-//   stage->last_touch_frame_index = r_vk_state->frame_index;
-// }
-
-// internal void
-// r_vk_stage_end()
-// {
-//   R_VK_Stage *stage = &r_vk_state->stage;
-// 
-//   // unpack stage batch
-//   R_VK_StagingBatch *batch = &stage->batches[stage->idx];
-//   VkCommandBuffer cmd = stage->cmds[stage->idx];
-//   VkFence fence = stage->fences[stage->idx];
-// 
-//   // check all images, transfer them into shader read stage
-//   for(U64 i = 0; i < darray_size(batch->images); i++)
-//   {
-//     R_VK_Image *image = batch->images[i];
-//     Assert(image->gpu_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-//     // transfer image layout to shader read
-//     r_vk_image_transition(cmd, image->h,
-//                           .src_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-//                           .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-//                           .src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
-//                           .src_access_flag = VK_ACCESS_TRANSFER_WRITE_BIT,
-//                           .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-//                           .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
-//                           
-//     image->gpu_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-//   }
-// 
-//   // end command buffer & submit
-//   {
-//     VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-//     si.commandBufferCount = 1;
-//     si.pCommandBuffers = &cmd;
-//     VK_Assert(vkEndCommandBuffer(cmd));
-//     VK_Assert(vkResetFences(r_vk_ldevice()->h, 1, &fence));
-//     VK_Assert(vkQueueSubmit(r_vk_ldevice()->gfx_queue, 1, &si, fence));
-//   }
-// 
-//   Assert(batch->size > 0);
-//   // flag batch
-//   batch->submitted = 1;
-//   // rotate stage idx
-//   stage->idx = (stage->idx+1)%R_VK_STAGING_IN_FLIGHT_COUNT;
-// }
-
-
 internal void
 r_vk_stage_copy_image(void *src, U64 size, R_VK_Image *dst, Vec3S32 offset, Vec3S32 extent)
 {
@@ -711,7 +501,7 @@ r_vk_swapchain_alloc(R_VK_Surface *surface, OS_Handle os_wnd, VkFormat format, V
   VkSemaphore submit_semaphores[ArrayCount(ret->submit_semaphores)] = {0};
   for(U64 i = 0; i < image_count; i++)
   {
-    submit_semaphores[i] = r_vk_semaphore(r_vk_ldevice()->h);
+    submit_semaphores[i] = r_vk_semaphore();
   }
 
   // Fill Info & Return
@@ -876,7 +666,6 @@ r_vk_memory_alloc(R_VK_MemoryHeapUsage usage, VkMemoryRequirements mem_requireme
           // No free block? -> alloc a new one if we could 
           if(free_block == 0)
           {
-            printf("allocating\n");
             U64 physical_heap_free_size = physical_heap->cap-physical_heap->res;
             U64 max_free_slots = physical_heap_free_size/pool_chunk_size;
             // U64 next_block_slot_count = pool->last_block ? pool->last_block->slot_count*2 : 4;
@@ -888,7 +677,6 @@ r_vk_memory_alloc(R_VK_MemoryHeapUsage usage, VkMemoryRequirements mem_requireme
             U64 next_block_size = next_block_slot_count * pool_chunk_size;
 
             if(next_block_size == 0) continue; // no more free memory on this heap? -> try next memory_type
-
             // Try allocate first
             VkMemoryAllocateInfo alloc_info = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
             alloc_info.allocationSize = next_block_size;
@@ -899,6 +687,7 @@ r_vk_memory_alloc(R_VK_MemoryHeapUsage usage, VkMemoryRequirements mem_requireme
 
             if(alloc_ret == VK_SUCCESS)
             {
+              printf("Allocating %.3f MB\n", next_block_size/1024.f/1024.f);
               R_VK_MemoryHeapBlock *new_block = push_array(r_vk_state->arena, R_VK_MemoryHeapBlock, 1);
               new_block->pool = pool;
               new_block->memory_handle = memory_handle;
@@ -988,187 +777,8 @@ r_vk_memory_map(R_VK_Memory *memory)
   memory->mapped = (U8*)block->mapped + memory->offset;
 }
 
-//- UBO, SBO
-
-// internal R_VK_UBOBuffer
-// r_vk_ubo_buffer_alloc(R_VK_UBOTypeKind kind, U64 unit_count)
-// {
-//   R_VK_UBOBuffer ubo_buffer = {0};
-// 
-//   U64 stride = 0;
-//   switch(kind)
-//   {
-//     case R_VK_UBOTypeKind_Rect:
-//     {
-//       stride = AlignPow2(sizeof(R_VK_UBO_Rect), r_vk_pdevice()->properties.limits.minUniformBufferOffsetAlignment);
-//     }break;
-//     case R_VK_UBOTypeKind_Geo2D:
-//     {
-//       stride = AlignPow2(sizeof(R_VK_UBO_Geo2D), r_vk_pdevice()->properties.limits.minUniformBufferOffsetAlignment);
-//     }break;
-//     case R_VK_UBOTypeKind_Geo3D:
-//     {
-//       stride = AlignPow2(sizeof(R_VK_UBO_Geo3D), r_vk_pdevice()->properties.limits.minUniformBufferOffsetAlignment);
-//     }break;
-//     case R_VK_UBOTypeKind_Geo3D_TileFrustum:
-//     {
-//       stride = AlignPow2(sizeof(R_VK_UBO_Geo3D_TileFrustum), r_vk_pdevice()->properties.limits.minUniformBufferOffsetAlignment);
-//     }break;
-//     case R_VK_UBOTypeKind_Geo3D_LightCulling:
-//     {
-//       stride = AlignPow2(sizeof(R_VK_UBO_Geo3D_LightCulling), r_vk_pdevice()->properties.limits.minUniformBufferOffsetAlignment);
-//     }break;
-//     default:{InvalidPath;}break;
-//   }
-// 
-//   U64 buf_size = stride * unit_count;
-// 
-//   ubo_buffer.unit_count  = unit_count;
-//   ubo_buffer.stride      = stride;
-//   ubo_buffer.buffer.size = buf_size;
-// 
-//   VkBufferCreateInfo buf_ci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-//   buf_ci.size = buf_size;
-//   buf_ci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-//   buf_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-//   // The flags parameter is used to configure sparse buffer memory
-//   // Sparse buffers in Vulkan refer to a memory management technique that allows more flexible and efficient use of GPU memory
-//   // This technique is particularly useful for handling large datasets, such as textures or vertex buffers, that might not fit contiguously in GPU
-//   // memory or that require efficient streaming of data in and out of GPU memory
-//   buf_ci.flags = 0;
-// 
-//   VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &buf_ci, NULL, &ubo_buffer.buffer.h));
-//   VkMemoryRequirements mem_requirements;
-//   vkGetBufferMemoryRequirements(r_vk_ldevice()->h, ubo_buffer.buffer.h, &mem_requirements);
-// 
-//   VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-//   VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-//   R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
-//   VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, ubo_buffer.buffer.h, memory->h, memory->offset));
-//   r_vk_memory_map(memory);
-//   ubo_buffer.buffer.memory = memory;
-// 
-//   // Create descriptor set
-//   R_VK_DescriptorSetKind ds_type = 0;
-//   switch(kind)
-//   {
-//     case R_VK_UBOTypeKind_Rect:               {ds_type = R_VK_DescriptorSetKind_UBO_Rect;}break;
-//     case R_VK_UBOTypeKind_Geo2D:              {ds_type = R_VK_DescriptorSetKind_UBO_Geo2D;}break;
-//     case R_VK_UBOTypeKind_Geo3D:              {ds_type = R_VK_DescriptorSetKind_UBO_Geo3D;}break;
-//     case R_VK_UBOTypeKind_Geo3D_TileFrustum:  {ds_type = R_VK_DescriptorSetKind_UBO_Geo3D_TileFrustum;}break;
-//     case R_VK_UBOTypeKind_Geo3D_LightCulling: {ds_type = R_VK_DescriptorSetKind_UBO_Geo3D_LightCulling;}break;
-//     default:                                  {InvalidPath;}break;
-//   }
-// 
-//   // TODO(k): we should set cap based on something, right?
-//   r_vk_descriptor_set_alloc(ds_type, 1, 3, &ubo_buffer.buffer.h, NULL, NULL, &ubo_buffer.set);
-//   return ubo_buffer;
-// }
-// 
-// internal R_VK_SBOBuffer
-// r_vk_sbo_buffer_alloc(R_VK_SBOTypeKind kind, U64 unit_count)
-// {
-//   R_VK_SBOBuffer ret = {0};
-//   U64 stride = 0;
-// 
-//   B32 device_local = 0;
-//   B32 auto_mapped = 0;
-//   VkBufferUsageFlags flags = 0;
-//   // NOTE(k): we are expecting stride is equal to the size of the struct
-//   switch(kind)
-//   {
-//     case R_VK_SBOTypeKind_Geo3D_Joints:
-//     {
-//       auto_mapped = 1;
-//       U64 array_size = sizeof(R_VK_SBO_Geo3D_Joint) * R_MAX_JOINTS_PER_PASS;
-//       stride = AlignPow2(array_size, r_vk_pdevice()->properties.limits.minStorageBufferOffsetAlignment);
-//     }break;
-//     case R_VK_SBOTypeKind_Geo3D_Materials:
-//     {
-//       auto_mapped = 1;
-//       U64 array_size = sizeof(R_VK_SBO_Geo3D_Material) * R_MAX_MATERIALS_PER_PASS;
-//       stride = AlignPow2(array_size, r_vk_pdevice()->properties.limits.minStorageBufferOffsetAlignment);
-//     }break;
-//     case R_VK_SBOTypeKind_Geo3D_Tiles:
-//     {
-//       device_local = 1;
-//       U64 array_size = sizeof(R_VK_SBO_Geo3D_Tile) * R_VK_MAX_TILES_PER_PASS;
-//       stride = AlignPow2(array_size, r_vk_pdevice()->properties.limits.minStorageBufferOffsetAlignment);
-//     }break;
-//     case R_VK_SBOTypeKind_Geo3D_Lights:
-//     {
-//       auto_mapped = 1;
-//       U64 array_size = sizeof(R_VK_SBO_Geo3D_Light) * R_MAX_LIGHTS_PER_PASS;
-//       stride = AlignPow2(array_size, r_vk_pdevice()->properties.limits.minStorageBufferOffsetAlignment);
-//     }break;
-//     case R_VK_SBOTypeKind_Geo3D_LightIndices:
-//     {
-//       device_local = 1;
-//       // NOTE(k): we need to use vkFillBuffer to clear this buffer, hense this flag
-//       flags |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-//       U64 array_size = sizeof(R_VK_SBO_Geo3D_LightIndice) * R_VK_MAX_LIGHTS_PER_TILE * R_VK_MAX_TILES_PER_PASS;
-//       stride = AlignPow2(array_size, r_vk_pdevice()->properties.limits.minStorageBufferOffsetAlignment);
-//     }break;
-//     case R_VK_SBOTypeKind_Geo3D_TileLights:
-//     {
-//       device_local = 1;
-//       U64 array_size = sizeof(R_VK_SBO_Geo3D_TileLights) * R_VK_MAX_TILES_PER_PASS;
-//       stride = AlignPow2(array_size, r_vk_pdevice()->properties.limits.minStorageBufferOffsetAlignment);
-//     }break;
-//     default:{InvalidPath;}break;
-//   }
-// 
-//   U64 buf_size = stride*unit_count;
-// 
-//   ret.unit_count  = unit_count;
-//   ret.stride      = stride;
-//   ret.buffer.size = buf_size;
-// 
-//   VkBufferCreateInfo buf_ci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-//   buf_ci.size = buf_size;
-//   buf_ci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|flags;
-//   // Just like the images in the swapchain, buffers can also be owned by a specific queue family or be shared between multiple at the same time
-//   // Our buffer will only be used from the graphics queue, so we an stick to exclusive access
-//   buf_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-//   // The flags parameter is used to configure sparse buffer memory
-//   // Sparse buffers in VUlkan refer to a memory management technique that allows more flexible and efficient use of GPU memory
-//   // This technique is particularly useful for handling large datasets, such as textures or vertex buffers, that might not fit contiguously in GPU
-//   // memory or that require efficient streaming of data in and out of GPU memory
-//   buf_ci.flags = 0;
-// 
-//   VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &buf_ci, NULL, &ret.buffer.h));
-//   VkMemoryRequirements mem_requirements;
-//   vkGetBufferMemoryRequirements(r_vk_ldevice()->h, ret.buffer.h, &mem_requirements);
-// 
-//   VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-//   VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-//   R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
-//   VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, ret.buffer.h, memory->h, memory->offset));
-//   if(auto_mapped)
-//   {
-//     r_vk_memory_map(memory);
-//   }
-//   ret.buffer.memory = memory;
-// 
-//   // Create descriptor set
-//   R_VK_DescriptorSetKind ds_type = 0;
-//   switch(kind)
-//   {
-//     case R_VK_SBOTypeKind_Geo3D_Joints:       {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_Joints;}break;
-//     case R_VK_SBOTypeKind_Geo3D_Materials:    {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_Materials;}break;
-//     case R_VK_SBOTypeKind_Geo3D_Tiles:        {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_Tiles;}break;
-//     case R_VK_SBOTypeKind_Geo3D_Lights:       {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_Lights;}break;
-//     case R_VK_SBOTypeKind_Geo3D_LightIndices: {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_LightIndices;}break;
-//     case R_VK_SBOTypeKind_Geo3D_TileLights:   {ds_type = R_VK_DescriptorSetKind_SBO_Geo3D_TileLights;}break;
-//     default:                                  {InvalidPath;}break;
-//   }
-// 
-//   r_vk_descriptor_set_alloc(ds_type, 1, 3, &ret.buffer.h, NULL, NULL, &ret.set);
-//   return ret;
-// }
-
 internal R_VK_Buffer *
-r_vk_buffer_from_pool(R_VK_BufferPoolKind kind, U64 size)
+r_vk_buffer_from_pool(R_VK_BufferPoolKind kind, U64 required_size)
 {
   R_VK_Buffer *ret = 0;
 
@@ -1177,7 +787,7 @@ r_vk_buffer_from_pool(R_VK_BufferPoolKind kind, U64 size)
   for(U64 i = 0; i < ArrayCount(r_vk_buffer_chunk_sizes); ++i)
   {
     U64 chunk_size = r_vk_buffer_chunk_sizes[i];
-    if(chunk_size >= size)
+    if(chunk_size >= required_size)
     {
       best_fit_chunk_size_idx = i;
       break;
@@ -1193,6 +803,7 @@ r_vk_buffer_from_pool(R_VK_BufferPoolKind kind, U64 size)
     // No more free buffer? -> alloc a new one
     if(ret == 0)
     {
+      U32 chunk_size = r_vk_buffer_chunk_sizes[best_fit_chunk_size_idx];
       ret = r_vk_state->first_free_buffer;
       if(ret == 0)
       {
@@ -1206,17 +817,17 @@ r_vk_buffer_from_pool(R_VK_BufferPoolKind kind, U64 size)
         ret->generation = gen;
       }
 
-      VkBuffer buffer;
-      U64 buffer_size;
+      VkBuffer buffer = {0};
+      U64 buffer_size = 0;
       R_VK_Memory *memory = 0;
-      R_VK_DescriptorSet desc_set;
+      R_VK_DescriptorSet desc_set = {0};
 
       switch(kind)
       {
         case R_VK_BufferPoolKind_Instance:
         {
           VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-          bci.size = size;
+          bci.size = chunk_size;
           bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
           bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
           VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &bci, NULL, &buffer));
@@ -1235,7 +846,7 @@ r_vk_buffer_from_pool(R_VK_BufferPoolKind kind, U64 size)
         case R_VK_BufferPoolKind_UBO:
         {
           VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-          bci.size = size;
+          bci.size = chunk_size;
           bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
           bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
           VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &bci, NULL, &buffer));
@@ -1255,13 +866,15 @@ r_vk_buffer_from_pool(R_VK_BufferPoolKind kind, U64 size)
         case R_VK_BufferPoolKind_Scratch:
         {
           VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-          bci.size = size;
+          bci.size = chunk_size;
           bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
           bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
           VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &bci, NULL, &buffer));
 
           VkMemoryRequirements mem_requirements;
           vkGetBufferMemoryRequirements(r_vk_ldevice()->h, buffer, &mem_requirements);
+
+          buffer_size = mem_requirements.size;
 
           VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
           VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
@@ -1297,8 +910,14 @@ r_vk_buffer_release_to_pool(R_VK_Buffer *buffer)
 internal void
 r_vk_buffer_release(R_VK_Buffer *buffer)
 {
+  // Destroy descriptor set if have any
+  if(buffer->desc_set.h != VK_NULL_HANDLE)
+  {
+    r_vk_descriptor_set_release(&buffer->desc_set);
+  }
   vkDestroyBuffer(r_vk_ldevice()->h, buffer->h, NULL);
   r_vk_memory_release(buffer->memory);
+
   SLLStackPush(r_vk_state->first_free_buffer, buffer);
   // NOTE(k): we should increase generation in release instead of alloc
   buffer->generation++;
@@ -1464,10 +1083,9 @@ r_vk_render_target_set_alloc(OS_Handle os_wnd, R_VK_Surface *surface, VkExtent2D
     vkGetBufferMemoryRequirements(r_vk_ldevice()->h, stage_id_cpu->h, &mem_requirements);
     stage_id_cpu->size = mem_requirements.size;
 
-    // FIXME: we should use VK_MEMORY_PROPERTY_HOST_CACHED_BIT for gpu read back buffer
-    // VkMemoryPropertyFlags property_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    // FIXME: do we need to invalid cache everytime I read from it?
-    VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+    // NOTE(k): We should use VK_MEMORY_PROPERTY_HOST_CACHED_BIT for gpu read back buffer
+    // VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+    VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     R_VK_Memory *memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
     VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, stage_id_cpu->h, memory->h, memory->offset));
@@ -1957,7 +1575,6 @@ r_vk_render_target_set_destroy(R_VK_RenderTargetSet *rt_set)
   vkDestroyImageView(r_vk_ldevice()->h, rt_set->geo2d_color_image.view, NULL);
   vkDestroyImage(r_vk_ldevice()->h, rt_set->geo2d_color_image.h, NULL);
   r_vk_descriptor_set_release(&rt_set->geo2d_color_ds);
-  // FIXME: replace it with r_vk_memory_release
   r_vk_memory_release(rt_set->geo2d_color_image.memory);
 
   // geo3d color image
@@ -2331,12 +1948,12 @@ r_vk_fence()
 }
 
 internal VkSemaphore
-r_vk_semaphore(VkDevice device)
+r_vk_semaphore()
 {
   // In current version of the VK API it doesn't actually have any required fields besides sType
   VkSemaphoreCreateInfo create_info = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
   VkSemaphore sem;
-  VK_Assert(vkCreateSemaphore(device, &create_info, NULL, &sem));
+  VK_Assert(vkCreateSemaphore(r_vk_ldevice()->h, &create_info, NULL, &sem));
   return sem;
 }
 
@@ -2363,9 +1980,10 @@ r_vk_cleanup_unsafe_semaphore(VkQueue queue, VkSemaphore semaphore)
  * But it can also be used to transition image layouts and transfer queue family ownership when VK_SHARING_MODE_EXCLUSIVE is used
  * There is an equivalent buffer memory barrier to do this for buffers
  */
+
 internal void
-r_vk_image_transition_(VkCommandBuffer cmd_buf, VkImage image, R_VK_ImageTransitionParams *params)
-{
+r_vk_raw_image_transition_(VkCommandBuffer cmd_buf, VkImage image, R_VK_ImageTransitionParams *params)
+{ 
   ProfBeginFunction();
   VkImageMemoryBarrier barrier =
   {
@@ -2418,6 +2036,15 @@ r_vk_image_transition_(VkCommandBuffer cmd_buf, VkImage image, R_VK_ImageTransit
   // The latter turns the barrier into a per-region condition
   // That means that the implementation is allowed to already begin reading from the parts of a resource that were written so far, for example
   vkCmdPipelineBarrier(cmd_buf, params->src_stage, params->dst_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
+  ProfEnd();
+}
+
+internal void
+r_vk_image_transition_(VkCommandBuffer cmd_buf, R_VK_Image *image, R_VK_ImageTransitionParams *params)
+{
+  ProfBeginFunction();
+  r_vk_raw_image_transition_(cmd_buf, image->h, params);
+  image->gpu_layout = params->dst_layout;
   ProfEnd();
 }
 
@@ -5085,7 +4712,7 @@ r_window_equip(OS_Handle os_wnd)
   {
     window_frames[i].rt_set = r_vk_render_target_set_alloc(os_wnd, &surface, swapchain->extent);
     // Semaphore to signal that an image has been acquired from the swapchain and is ready for rendering
-    window_frames[i].img_acq_sem = r_vk_semaphore(r_vk_ldevice()->h);
+    window_frames[i].img_acq_sem = r_vk_semaphore();
     // FIXME: we could reuse command buffer
     window_frames[i].cmd_buffer = command_buffers[i];
   }
@@ -5404,26 +5031,72 @@ r_begin_frame(void)
   VK_Assert(vkResetFences(r_vk_ldevice()->h, 1, &frame->inflt_fence));
   VK_Assert(vkResetCommandBuffer(frame->cmd_buffer, 0));
 
+  ////////////////////////////////
+  //~ Record stage copy commands
+
   // Stage Copy
+  if(frame->stages[0].first_staging_buffer)
   {
+
     R_VK_FrameStage *stage = &frame->stages[0];
-    if(stage->first_staging_buffer)
+    VkCommandBuffer cmd_buf = frame->cmd_buffer;
+
+    VkCommandBufferBeginInfo begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+    begin_info.pInheritanceInfo = 0;
+
+    VK_Assert(vkBeginCommandBuffer(cmd_buf, &begin_info));
+
+    for(R_VK_Buffer *staging_buffer = stage->first_staging_buffer;
+        staging_buffer != 0;
+        staging_buffer = staging_buffer->next)
     {
-      VkCommandBuffer cmd_buffer = frame->cmd_buffer;
-
-      VkCommandBufferBeginInfo begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-      begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
-      begin_info.pInheritanceInfo = 0;
-
-      VK_Assert(vkBeginCommandBuffer(cmd, &begin_info));
-
-      for(R_VK_Buffer *staging_buffer = stage->first_staging_buffer;
-          staging_buffer != 0;
-          staging_buffer = staging_buffer->next)
+      // FIXME: handle buffer copy later
+      R_VK_Image *dst = staging_buffer->staging.image.dst;
+      Vec3S32 offset = staging_buffer->staging.image.offset;
+      Vec3S32 extent = staging_buffer->staging.image.extent;
+      VkBufferImageCopy region =
       {
-        // FIXME: target could be buffer or image
-        r_vk_image_transition(cmd_buffer,
-                              staging_buffer->staging.image.dst,
+        .bufferOffset = 0,
+        // These two fields specify how the pixels are laid out in memory
+        // For example, you could have some padding bytes between rows of the image
+        // Specifying 0 for both indicates that the pixels are simply tightly packed like they are in our case
+        // The imageSubresource, imageOffset and imageExtent fields indicate to which part of the image we want to copy the pixels
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .imageSubresource.mipLevel = 0,
+        .imageSubresource.baseArrayLayer = 0,
+        .imageSubresource.layerCount = 1,
+        .imageOffset = {offset.x, offset.y, offset.z}, // These two fields indicate to which part of the image we want to copy the pixels
+        .imageExtent = {extent.x, extent.y, extent.z},
+      };
+
+      // First touch this frame? -> translate it to VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+      if(dst->gpu_layout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+      {
+        r_vk_image_transition(cmd_buf, dst,
+                              .src_layout = dst->gpu_layout,
+                              .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              .src_stage = dst->gpu_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                              .src_access_flag = 0,
+                              .dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                              .dst_access_flag = VK_ACCESS_TRANSFER_WRITE_BIT);
+      }
+
+      vkCmdCopyBufferToImage(cmd_buf, staging_buffer->h, dst->h, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    }
+
+    for(R_VK_Buffer *staging_buffer = stage->first_staging_buffer;
+        staging_buffer != 0;
+        staging_buffer = staging_buffer->next)
+    {
+      R_VK_Image *dst = staging_buffer->staging.image.dst;
+      Assert(dst->gpu_layout != VK_IMAGE_LAYOUT_UNDEFINED);
+      if(dst->gpu_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+      {
+        r_vk_image_transition(cmd_buf,
+                              dst,
                               .src_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                               .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -5431,20 +5104,19 @@ r_begin_frame(void)
                               .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                               .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
       }
-
-      // Submit
-      {
-        VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-        si.commandBufferCount = 1;
-        si.pCommandBuffers = &cmd;
-        VK_Assert(vkEndCommandBuffer(cmd));
-        VK_Assert(vkResetFences(r_vk_ldevice()->h, 1, &fence));
-        VK_Assert(vkQueueSubmit(r_vk_ldevice()->gfx_queue, 1, &si, fence));
-      }
     }
+
+    VK_Assert(vkEndCommandBuffer(cmd_buf));
+
+    R_VK_Submit submit = {0};
+    submit.cmd_bufs = push_array(r_vk_frame_arena(), VkCommandBuffer, 1);
+    submit.cmd_bufs[0] = cmd_buf;
+    submit.cmd_buf_count = 1;
+    darray_push(r_vk_frame_arena(), stage->submits, submit);
   }
 
-  // Clear back stage buffer
+  ////////////////////////////////
+  //~ Clear back stage buffer
   {
     R_VK_FrameStage *stage = &frame->stages[1];
     R_VK_Buffer *heads[] = {stage->first_staged_buffer, stage->first_staging_buffer};
@@ -5452,7 +5124,7 @@ r_begin_frame(void)
     {
       for(R_VK_Buffer *buffer = heads[i], *next = 0; buffer != 0; buffer = next)
       {
-        R_VK_Buffer *next = buffer->next;
+        next = buffer->next;
         Assert(buffer->pool_slot);
         r_vk_buffer_release_to_pool(buffer);
       }
@@ -5464,45 +5136,49 @@ r_begin_frame(void)
 r_hook void
 r_end_frame(void)
 {
+  Temp scratch = scratch_begin(0,0);
   R_VK_Frame *frame = r_vk_current_frame();
   R_VK_FrameStage *stage = &frame->stages[0];
 
   ////////////////////////////////
-  //~ Record stage commands
-
-  ////////////////////////////////
   //~ Submit command buffers 
 
+  U64 submit_count = darray_size(stage->submits);
+  VkSubmitInfo *submit_infos = push_array(scratch.arena, VkSubmitInfo, submit_count);
+  for(U64 submit_idx = 0; submit_idx < submit_count; ++submit_idx)
   {
-    VkSubmitInfo submit_info = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-    submit_info.pWaitSemaphores      = stage->wait_semaphores;
-    submit_info.pWaitDstStageMask    = stage->wait_stages;
-    submit_info.waitSemaphoreCount   = darray_size(stage->wait_semaphores);
-    submit_info.pCommandBuffers      = stage->command_buffers;
-    submit_info.commandBufferCount   = darray_size(stage->command_buffers);
-    submit_info.pSignalSemaphores    = stage->signal_semaphores;
-    submit_info.signalSemaphoreCount = darray_size(stage->signal_semaphores);
-    ProfScope("Queue Submition")
-    {
-      VK_Assert(vkQueueSubmit(r_vk_ldevice()->gfx_queue, 1, &submit_info, frame->inflt_fence));
-    }
+    R_VK_Submit *submit = &stage->submits[submit_idx];
+
+    VkSubmitInfo *submit_info = &submit_infos[submit_idx];
+    submit_info->sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info->pCommandBuffers      = submit->cmd_bufs;
+    submit_info->commandBufferCount   = submit->cmd_buf_count;
+    submit_info->pWaitSemaphores      = submit->wait_sems;
+    submit_info->pWaitDstStageMask    = submit->wait_stages;
+    submit_info->waitSemaphoreCount   = submit->wait_sem_count;
+    submit_info->pSignalSemaphores    = submit->signal_sems;
+    submit_info->signalSemaphoreCount = submit->signal_sem_count;
+  }
+
+  ProfScope("Queue Submition") if(submit_count > 0)
+  {
+    VK_Assert(vkQueueSubmit(r_vk_ldevice()->gfx_queue, submit_count, submit_infos, frame->inflt_fence));
   }
 
   ////////////////////////////////
   //~ Present all windows
 
-  for(U64 i = 0; i < darray_size(stage->windows_to_present); ++i)
+  for(U64 present_idx = 0; present_idx < darray_size(stage->presents); ++present_idx)
   {
-    R_VK_Window *window = stage->windows_to_present[i];
-    R_VK_WindowFrame *window_frame = r_vk_frame_from_window(window);
+    R_VK_Present *present = &stage->presents[present_idx];
+    R_VK_Window *window = present->window;
 
-    VkSwapchainKHR swapchains[] = {window->swapchain->h};
     VkPresentInfoKHR prest_info = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
     prest_info.waitSemaphoreCount = 1;
-    prest_info.pWaitSemaphores = &stage->signal_semaphores[i];
-    prest_info.pSwapchains = swapchains;
+    prest_info.pWaitSemaphores = &present->wait_sem;
+    prest_info.pSwapchains = &present->swapchain;
     prest_info.swapchainCount = 1;
-    prest_info.pImageIndices = &window_frame->img_idx;
+    prest_info.pImageIndices = &present->img_idx;
     // It allows you to specify an array of VkResult values to check for every individual swapchain if presentation was successful
     // It's not necessary if you're only using a single swapchain, because you can simply use the return value of the present function
     prest_info.pResults = NULL; // Optional
@@ -5527,6 +5203,7 @@ r_end_frame(void)
   Swap(R_VK_FrameStage, frame->stages[0], frame->stages[1]); // flip stages
   r_vk_state->frame_index++;
   arena_clear(r_vk_state->frame_arena);
+  scratch_end(scratch);
 }
 
 r_hook void
@@ -5592,8 +5269,8 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
 
   // NOTE(k): we can't clear swapchain image using this, since swap image don't guarantee to have usage of VK_IMAGE_USAGE_TRANSFER_DST
   // https://github.com/GameTechDev/IntroductionToVulkan/issues/4
-  VkImage stage_color_image = window_frame->rt_set->stage_color_image.h;
   {
+    R_VK_Image *stage_color_image = &window_frame->rt_set->stage_color_image;
     r_vk_image_transition(window_frame->cmd_buffer, stage_color_image,
                           .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
                           .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -5608,7 +5285,7 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
     subrange.levelCount     = 1;
     subrange.baseArrayLayer = 0;
     subrange.layerCount     = 1;
-    vkCmdClearColorImage(window_frame->cmd_buffer, stage_color_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_clr, 1, &subrange);
+    vkCmdClearColorImage(window_frame->cmd_buffer, stage_color_image->h, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_clr, 1, &subrange);
     r_vk_image_transition(window_frame->cmd_buffer, stage_color_image,
                           .src_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                           .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -5617,8 +5294,8 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
                           .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                           .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
   }
-  VkImage id_color_image = window_frame->rt_set->stage_id_image.h;
   {
+    R_VK_Image *id_color_image = &window_frame->rt_set->stage_id_image;
     // [id_color_image] undefined -> transfer_dst
     r_vk_image_transition(window_frame->cmd_buffer, id_color_image,
                           .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -5634,7 +5311,7 @@ r_window_begin_frame(OS_Handle os_wnd, R_Handle window_equip)
     subrange.levelCount     = 1;
     subrange.baseArrayLayer = 0;
     subrange.layerCount     = 1;
-    vkCmdClearColorImage(window_frame->cmd_buffer, id_color_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_clr, 1, &subrange);
+    vkCmdClearColorImage(window_frame->cmd_buffer, id_color_image->h, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_clr, 1, &subrange);
     r_vk_image_transition(window_frame->cmd_buffer, id_color_image,
                           .src_layout =VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                           .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -5732,7 +5409,7 @@ r_window_end_frame(OS_Handle os_wnd, R_Handle window_equip, Vec2F32 mouse_ptr)
     render_info.pColorAttachments = &color_attachment_info;
 
     // transition stage color image layout to shader read optimal
-    r_vk_image_transition(cmd_buffer, rt_set->stage_color_image.h,
+    r_vk_image_transition(cmd_buffer, &rt_set->stage_color_image,
                           .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                           .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                           .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -5741,13 +5418,13 @@ r_window_end_frame(OS_Handle os_wnd, R_Handle window_equip, Vec2F32 mouse_ptr)
                           .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
 
     // [swapchain image] undefined -> color_attachment
-    r_vk_image_transition(cmd_buffer, swapchain->images[window_frame->img_idx],
-                          .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
-                          .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                          .src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                          .src_access_flag = 0,
-                          .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                          .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+    r_vk_raw_image_transition(cmd_buffer, swapchain->images[window_frame->img_idx],
+                              .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
+                              .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              .src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                              .src_access_flag = 0,
+                              .dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              .dst_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 
     // begin
     vkCmdBeginRendering(cmd_buffer, &render_info);
@@ -5779,13 +5456,13 @@ r_window_end_frame(OS_Handle os_wnd, R_Handle window_equip, Vec2F32 mouse_ptr)
 
     vkCmdEndRendering(cmd_buffer);
   }
-  r_vk_image_transition(cmd_buffer, swapchain->images[window_frame->img_idx],
-                        .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                        .dst_layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                        .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                        .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                        .dst_stage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                        .dst_access_flag = 0);
+  r_vk_raw_image_transition(cmd_buffer, swapchain->images[window_frame->img_idx],
+                            .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                            .dst_layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                            .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                            .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                            .dst_stage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                            .dst_access_flag = 0);
 
   VK_Assert(vkEndCommandBuffer(cmd_buffer));
 
@@ -5794,11 +5471,27 @@ r_window_end_frame(OS_Handle os_wnd, R_Handle window_equip, Vec2F32 mouse_ptr)
 
   R_VK_Frame *frame = r_vk_current_frame();
   R_VK_FrameStage *stage = &frame->stages[0];
-  darray_push(r_vk_frame_arena(), stage->command_buffers, cmd_buffer);
-  darray_push(r_vk_frame_arena(), stage->wait_semaphores, window_frame->img_acq_sem);
-  darray_push(r_vk_frame_arena(), stage->wait_stages, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-  darray_push(r_vk_frame_arena(), stage->signal_semaphores, swapchain->submit_semaphores[window_frame->img_idx]);
-  darray_push(r_vk_frame_arena(), stage->windows_to_present, window);
+
+  R_VK_Submit submit = {0};
+  submit.cmd_bufs = push_array(r_vk_frame_arena(), VkCommandBuffer, 1);
+  submit.cmd_bufs[0] = cmd_buffer;
+  submit.cmd_buf_count = 1;
+  submit.wait_sems = push_array(r_vk_frame_arena(), VkSemaphore, 1);
+  submit.wait_sems[0] = window_frame->img_acq_sem;
+  submit.wait_stages = push_array(r_vk_frame_arena(), VkPipelineStageFlags, 1);
+  submit.wait_stages[0] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  submit.wait_sem_count = 1;
+  submit.signal_sems = push_array(r_vk_frame_arena(), VkSemaphore, 1);
+  submit.signal_sems[0] = swapchain->submit_semaphores[window_frame->img_idx];
+  submit.signal_sem_count = 1;
+  darray_push(r_vk_frame_arena(), stage->submits, submit);
+
+  R_VK_Present present = {0};
+  present.window = window;
+  present.swapchain = swapchain->h;
+  present.wait_sem = swapchain->submit_semaphores[window_frame->img_idx];
+  present.img_idx = window_frame->img_idx;
+  darray_push(r_vk_frame_arena(), stage->presents, present);
 
   ProfEnd();
   return v3f32(id.x, id.y, id.z);
@@ -5812,25 +5505,27 @@ r_window_submit(R_Handle window_equip, R_PassList *passes)
   ProfBeginFunction();
 
   R_VK_Window *window = r_vk_window_from_handle(window_equip);
+  R_VK_Frame *frame = r_vk_current_frame();
+  R_VK_FrameStage *stage = &frame->stages[0];
   R_VK_WindowFrame *window_frame = r_vk_frame_from_window(window);
   R_VK_RenderTargetSet *rt_set = window_frame->rt_set;
   VkCommandBuffer cmd_buf = window_frame->cmd_buffer;
 
-  // local_persist B32 first_submit = 1;
-  // if(BUILD_DEBUG && first_submit)
-  // {
-  //   printf("rt stage_color: %p\n", wnd->rt_set->stage_color_image.h);
-  //   printf("rt stage_id: %p\n", wnd->rt_set->stage_id_image.h);
-  //   printf("rt scratch_color: %p\n", wnd->rt_set->scratch_color_image.h);
-  //   printf("rt edge_image: %p\n", wnd->rt_set->edge_image.h);
-  //   printf("rt geo2d_color_image: %p\n", wnd->rt_set->geo2d_color_image.h);
+  local_persist B32 first_submit = 1;
+  if(BUILD_DEBUG && first_submit)
+  {
+    printf("rt stage_color: %p\n", rt_set->stage_color_image.h);
+    printf("rt stage_id: %p\n", rt_set->stage_id_image.h);
+    printf("rt scratch_color: %p\n", rt_set->scratch_color_image.h);
+    printf("rt edge_image: %p\n", rt_set->edge_image.h);
+    printf("rt geo2d_color_image: %p\n", rt_set->geo2d_color_image.h);
 
-  //   printf("rt geo3d_color_image: %p\n", wnd->rt_set->geo3d_color_image.h);
-  //   printf("rt geo3d_normal_depth_image: %p\n", wnd->rt_set->geo3d_normal_depth_image.h);
-  //   printf("rt geo3d_depth_image: %p\n", wnd->rt_set->geo3d_depth_image.h);
-  //   printf("rt geo3d_pre_depth_image: %p\n", wnd->rt_set->geo3d_pre_depth_image.h);
-  //   first_submit = 0;
-  // }
+    printf("rt geo3d_color_image: %p\n", rt_set->geo3d_color_image.h);
+    printf("rt geo3d_normal_depth_image: %p\n", rt_set->geo3d_normal_depth_image.h);
+    printf("rt geo3d_depth_image: %p\n", rt_set->geo3d_depth_image.h);
+    printf("rt geo3d_pre_depth_image: %p\n", rt_set->geo3d_pre_depth_image.h);
+    first_submit = 0;
+  }
 
   // Do passing
   for(R_PassNode *pass_n = passes->first; pass_n != 0; pass_n = pass_n->next)
@@ -5874,6 +5569,7 @@ r_window_submit(R_Handle window_equip, R_PassList *passes)
         // Unpack uniform buffer
         U64 uniform_buffer_stride = AlignPow2(sizeof(R_VK_UBO_Rect), r_vk_pdevice()->properties.limits.minUniformBufferOffsetAlignment);
         R_VK_Buffer *uniform_buffer = r_vk_buffer_from_pool(R_VK_BufferPoolKind_UBO, uniform_buffer_stride*rect_batch_groups->count);
+        SLLQueuePush(stage->first_staged_buffer, stage->last_staged_buffer, uniform_buffer);
 
         // Bind pipeline
         // The second parameter specifies if the pipeline object is a graphics or compute pipelinVK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BITe
@@ -5891,6 +5587,7 @@ r_window_submit(R_Handle window_equip, R_PassList *passes)
 
         // Unpack inst buffer
         R_VK_Buffer *inst_buffer = r_vk_buffer_from_pool(R_VK_BufferPoolKind_Instance, sizeof(R_Rect2DInst)*params->rects.inst_count);
+        SLLQueuePush(stage->first_staged_buffer, stage->last_staged_buffer, inst_buffer);
 
         typedef struct R_VK_RectDrawGroup R_VK_RectDrawGroup;
         struct R_VK_RectDrawGroup
@@ -5943,6 +5640,7 @@ r_window_submit(R_Handle window_equip, R_PassList *passes)
           //~ Prepare texture
 
           R_VK_Tex2D *texture = r_vk_tex2d_from_handle(group_params->tex);
+          if(texture && texture->image.gpu_layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) texture = 0;
 
           // Set up texture sample map matrix based on texture format
           // Vulkan use col-major
@@ -6034,12 +5732,6 @@ r_window_submit(R_Handle window_equip, R_PassList *passes)
 
         U64 draw_group_count = draw_group_index;
 
-        // FIXME: todo
-        // Upload instance buffer for the all groups
-
-        // FIXME: todo
-        // Upload ubo buffer for the all groups
-
         // Bind instance buffer for the whole group
         if(draw_group_count > 0)
         {
@@ -6050,6 +5742,7 @@ r_window_submit(R_Handle window_equip, R_PassList *passes)
         if(draw_group_count > 0 && draw_groups[0].texture == 0)
         {
           R_VK_Tex2D *texture = r_vk_tex2d_from_handle(r_vk_state->backup_texture);
+          Assert(texture->image.gpu_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
           vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, r_vk_pipeline_set()->rect.layout, 1, 1, &texture->desc_set.h, 0, NULL);
         }
 
@@ -6387,14 +6080,14 @@ r_window_submit(R_Handle window_equip, R_PassList *passes)
         /////////////////////////////////////////////////////////////////////////////////
         // draw
 
-        r_vk_image_transition(cmd_buf, rt_set->stage_color_image.h,
+        r_vk_image_transition(cmd_buf, &rt_set->stage_color_image,
                               .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                               .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                               .dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                               .dst_access_flag = VK_ACCESS_SHADER_READ_BIT);
-        r_vk_image_transition(cmd_buf, rt_set->scratch_color_image.h,
+        r_vk_image_transition(cmd_buf, &rt_set->scratch_color_image,
                               .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
                               .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -6446,14 +6139,14 @@ r_window_submit(R_Handle window_equip, R_PassList *passes)
         // end drawing
         vkCmdEndRendering(cmd_buf);
 
-        r_vk_image_transition(cmd_buf, rt_set->scratch_color_image.h,
+        r_vk_image_transition(cmd_buf, &rt_set->scratch_color_image,
                               .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                               .src_access_flag = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                               .dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
                               .dst_access_flag = VK_ACCESS_TRANSFER_READ_BIT);
-        r_vk_image_transition(cmd_buf, rt_set->stage_color_image.h,
+        r_vk_image_transition(cmd_buf, &rt_set->stage_color_image,
                               .src_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                               .dst_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                               .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
@@ -6482,7 +6175,7 @@ r_window_submit(R_Handle window_equip, R_PassList *passes)
           copy_region.dstOffset = (VkOffset3D){0,0,0};
           copy_region.extent = (VkExtent3D){rt_set->scratch_color_image.extent.width, rt_set->scratch_color_image.extent.height, 1};
           vkCmdCopyImage(cmd_buf, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
-          r_vk_image_transition(cmd_buf, rt_set->stage_color_image.h,
+          r_vk_image_transition(cmd_buf, &rt_set->stage_color_image,
                                 .src_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                 .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                 .src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -6515,8 +6208,6 @@ r_window_submit(R_Handle window_equip, R_PassList *passes)
 
         vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, bloom_down_pipeline->h);
 
-        // FIXME: ReadMip[i]: COLOR_ATTACHMENT -> SHADER_READ
-        // FIXME: WriteMip[i]: UNDEFINED -> COLOR_ATTACHMENT
         VkImageView *mip_views = rt->views;
         R_VK_DescriptorSet *mip_descriptors = rt_set->stage_color_dss;
 
@@ -6526,7 +6217,7 @@ r_window_submit(R_Handle window_equip, R_PassList *passes)
           //~ Image transition
 
           // read 0
-          r_vk_image_transition(cmd_buf, rt->h,
+          r_vk_image_transition(cmd_buf, rt,
                                 .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                 .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                 .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -6536,7 +6227,7 @@ r_window_submit(R_Handle window_equip, R_PassList *passes)
                                 .mip_level = i);
 
           // write 1
-          r_vk_image_transition(cmd_buf, rt->h,
+          r_vk_image_transition(cmd_buf, rt,
                                 .src_layout = VK_IMAGE_LAYOUT_UNDEFINED,
                                 .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                 .src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -6612,7 +6303,7 @@ r_window_submit(R_Handle window_equip, R_PassList *passes)
           //////////////////////////////// 
           //~ Image transition
 
-          r_vk_image_transition(cmd_buf, rt->h,
+          r_vk_image_transition(cmd_buf, rt,
                                 .src_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                 .dst_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                 .src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -6621,7 +6312,7 @@ r_window_submit(R_Handle window_equip, R_PassList *passes)
                                 .dst_access_flag = VK_ACCESS_SHADER_READ_BIT,
                                 .mip_level = i+1);
 
-          r_vk_image_transition(cmd_buf, rt->h,
+          r_vk_image_transition(cmd_buf, rt,
                                 .src_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                 .dst_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                 .src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,

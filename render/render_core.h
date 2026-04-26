@@ -11,19 +11,9 @@
 ////////////////////////////////
 //~ Limits & Constants
 
-// support max 2 rect pass per frame
-#define R_MAX_RECT_PASS 2
-#define R_MAX_RECT_GROUPS 6000
-#define R_MAX_GEO2D_PASS 1
-// support max 3 geo3d pass per frame
-#define R_MAX_GEO3D_PASS 2
 #define R_MAX_JOINTS_PER_PASS 3000
 #define R_MAX_LIGHTS_PER_PASS 3000
 #define R_MAX_MATERIALS_PER_PASS 3000
-// inst count limits
-#define R_MAX_RECT_INSTANCES 90000
-#define R_MAX_MESH2D_INSTANCES 3000
-#define R_MAX_MESH3D_INSTANCES 3000
 
 ////////////////////////////////
 //~ rjf: Enums

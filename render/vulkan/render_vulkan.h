@@ -369,7 +369,6 @@ struct R_VK_Image
   VkImageView view;
   VkImageView views[R_VK_MAX_VIEWS_PER_IMAGE];
   VkExtent2D extent;
-  // FIXME: didn't use for now, may remove it later
   VkImageLayout gpu_layout;
 };
 
@@ -621,7 +620,6 @@ read_only global U64 r_vk_buffer_chunk_sizes[] =
 typedef struct R_VK_BufferPool R_VK_BufferPool;
 struct R_VK_BufferPool
 {
-  R_VK_BufferPoolKind kind;
   R_VK_BufferPoolSlot slots[ArrayCount(r_vk_buffer_chunk_sizes)];
 };
 
@@ -658,6 +656,30 @@ struct R_VK_RenderTargetSet
   U64                  last_touched_frame_index;
 };
 
+typedef struct R_VK_Submit R_VK_Submit;
+struct R_VK_Submit
+{
+  VkCommandBuffer*     cmd_bufs;
+  U32                  cmd_buf_count;
+
+  VkSemaphore          *wait_sems;
+  VkPipelineStageFlags *wait_stages;
+  U32                  wait_sem_count;
+
+  VkSemaphore          *signal_sems;
+  U32                  signal_sem_count;
+};
+
+typedef struct R_VK_Window R_VK_Window;
+typedef struct R_VK_Present R_VK_Present;
+struct R_VK_Present
+{
+  R_VK_Window    *window;
+  VkSwapchainKHR swapchain;
+  VkSemaphore    wait_sem;
+  U32            img_idx;
+};
+
 typedef struct R_VK_FrameStage R_VK_FrameStage;
 struct R_VK_FrameStage
 {
@@ -670,11 +692,8 @@ struct R_VK_FrameStage
   R_VK_Buffer *last_staging_buffer;
 
   // Submitions darray (per-frame, they all should have same length)
-  VkCommandBuffer *command_buffers;
-  VkSemaphore *wait_semaphores;
-  VkPipelineStageFlags *wait_stages;
-  VkSemaphore *signal_semaphores;
-  struct R_VK_Window **windows_to_present;
+  R_VK_Submit *submits;
+  R_VK_Present *presents;
 };
 
 typedef struct R_VK_Frame R_VK_Frame;
@@ -893,7 +912,9 @@ internal VkSemaphore           r_vk_semaphore();
 internal void                  r_vk_cleanup_unsafe_semaphore(VkQueue queue, VkSemaphore semaphore);
 
 //- sync helpers
-internal void                  r_vk_image_transition_(VkCommandBuffer cmd_buf, VkImage image, R_VK_ImageTransitionParams *params);
+internal void                  r_vk_raw_image_transition_(VkCommandBuffer cmd_buf, VkImage image, R_VK_ImageTransitionParams *params);
+#define r_vk_raw_image_transition(cmd,image, ...) r_vk_raw_image_transition_(cmd, image, &(R_VK_ImageTransitionParams){.aspect_mask = VK_IMAGE_ASPECT_COLOR_BIT, .mip_level = 0, __VA_ARGS__})
+internal void                  r_vk_image_transition_(VkCommandBuffer cmd_buf, R_VK_Image *image, R_VK_ImageTransitionParams *params);
 #define r_vk_image_transition(cmd,image, ...) r_vk_image_transition_(cmd, image, &(R_VK_ImageTransitionParams){.aspect_mask = VK_IMAGE_ASPECT_COLOR_BIT, .mip_level = 0, __VA_ARGS__})
 
 //- pipeline
