@@ -39,6 +39,29 @@ union R_Handle
 };
 
 ////////////////////////////////
+//~ k: ImGui Types
+
+typedef struct R_ImGuiVertex R_ImGuiVertex;
+struct R_ImGuiVertex
+{
+  Vec2F32 pos;
+  Vec2F32 uv;
+  U32 color_rgba;
+};
+
+typedef U16 R_ImGuiIndex; // U32 could also worked
+
+typedef struct R_ImGuiDrawCmd R_ImGuiDrawCmd;
+struct R_ImGuiDrawCmd
+{
+  U32 elem_count;
+  U32 idx_offset;
+  U32 vtx_offset;
+  Rng2F32 clip;
+  R_Handle tex;
+};
+
+////////////////////////////////
 //~ k: Geo3D Types
 
 typedef enum R_Geo3D_TexKind
@@ -326,6 +349,23 @@ struct R_PassParams_Rect
   R_BatchGroupRectList rects;
 };
 
+typedef struct R_PassParams_ImGui R_PassParams_ImGui;
+struct R_PassParams_ImGui
+{
+  Vec2F32 display_pos;
+  Vec2F32 display_size;
+  Vec2F32 framebuffer_scale;
+
+  R_ImGuiVertex *vertices;
+  U64 vertex_count;
+
+  R_ImGuiIndex *indices;
+  U64 index_count;
+
+  R_ImGuiDrawCmd *commands;
+  U64 command_count;
+};
+
 typedef struct R_PassParams_Blur R_PassParams_Blur;
 struct R_PassParams_Blur
 {
@@ -400,6 +440,7 @@ struct R_Pass
     {
       void *params;
       R_PassParams_Rect *params_rect;
+      R_PassParams_ImGui *params_imgui;
       R_PassParams_Blur *params_blur;
       R_PassParams_Noise *params_noise;
       R_PassParams_Edge *params_edge;

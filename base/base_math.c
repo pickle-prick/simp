@@ -914,6 +914,24 @@ internal Mat4x4F32 derotate_4x4f32(Mat4x4F32 mat) {
   return mat;
 }
 
+internal Mat4x4F32 inverse_orthographic_4x4f32(Mat4x4F32 m) 
+{
+  Mat4x4F32 inv = {0};
+
+  // Invert the diagonal (the scale factors)
+  inv.v[0][0] = 1.0f / m.v[0][0];
+  inv.v[1][1] = 1.0f / m.v[1][1];
+  inv.v[2][2] = 1.0f / m.v[2][2];
+  inv.v[3][3] = 1.0f;
+
+  // Invert the translation (Column 3 in a Column-Major matrix)
+  inv.v[3][0] = -m.v[3][0] * inv.v[0][0];
+  inv.v[3][1] = -m.v[3][1] * inv.v[1][1];
+  inv.v[3][2] = -m.v[3][2] * inv.v[2][2];
+
+  return inv;
+}
+
 ////////////////////////////////
 //~ rjf: Quaterion Ops
 

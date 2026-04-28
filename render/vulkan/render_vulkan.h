@@ -33,6 +33,7 @@
 typedef enum R_VK_VShadKind
 {
   R_VK_VShadKind_Rect,
+  R_VK_VShadKind_ImGui,
   // R_VK_VShadKind_Blur,
   R_VK_VShadKind_Noise,
   R_VK_VShadKind_Edge,
@@ -53,6 +54,7 @@ typedef enum R_VK_VShadKind
 typedef enum R_VK_FShadKind
 {
   R_VK_FShadKind_Rect,
+  R_VK_FShadKind_ImGui,
   // R_VK_FShadKind_Blur,
   R_VK_FShadKind_Noise,
   R_VK_FShadKind_Edge,
@@ -132,6 +134,7 @@ typedef enum R_VK_PipelineKind
   R_VK_PipelineKind_GFX_Null = -1,
   // gfx pipeline
   R_VK_PipelineKind_GFX_Rect,
+  R_VK_PipelineKind_GFX_ImGui,
   // R_VK_PipelineKind_GFX_Blur,
   R_VK_PipelineKind_GFX_Noise,
   R_VK_PipelineKind_GFX_Edge,
@@ -257,6 +260,15 @@ struct R_VK_UBO_Geo3D_LightCulling
 };
 
 //- push
+
+typedef struct R_VK_PUSH_ImGui R_VK_PUSH_ImGui;
+struct R_VK_PUSH_ImGui
+{
+  Vec2F32 display_pos;        // 8 bytes
+  Vec2F32 display_size;       // 8 bytes
+  Vec2F32 framebuffer_scale;  // 8 bytes
+  Vec2F32 _pad0;              // optional, align to 16
+};
 
 typedef struct R_VK_PUSH_Geo3D_Forward R_VK_PUSH_Geo3D_Forward;
 struct R_VK_PUSH_Geo3D_Forward
@@ -462,8 +474,11 @@ read_only global U64 r_vk_memory_chunk_sizes[] =
   1048576ULL,            // 1 MB
   4194304ULL,            // 4 MB
   16777216ULL,           // 16 MB
+  33554432ULL,           // 32 MB
   67108864ULL,           // 64 MB
+  134217728ULL,          // 128 MB
   268435456ULL,          // 256 MB
+  536870912ULL,          // 512 MB
   1073741824ULL,         // 1 GB
   // 0xffffffffffffffffull, // Fallback for huge manual allocations
 };
@@ -487,7 +502,7 @@ struct R_VK_LogicalMemoryHeap
   U32 physical_heap_idx;
   VkMemoryPropertyFlags property_flags;
   // NOTE(k): alignment == chunk_size
-  R_VK_MemoryHeapPool pools[ArrayCount(r_vk_memory_chunk_sizes)][R_VK_MemoryHeapUsage_COUNT];
+  R_VK_MemoryHeapPool pools[R_VK_MemoryHeapUsage_COUNT][ArrayCount(r_vk_memory_chunk_sizes)];
 };
 
 typedef struct R_VK_PhysicalMemoryHeap R_VK_PhysicalMemoryHeap;
@@ -590,6 +605,7 @@ struct R_VK_Tex2D
 typedef enum R_VK_BufferPoolKind
 {
   R_VK_BufferPoolKind_Instance,
+  R_VK_BufferPoolKind_VertexIndex,
   R_VK_BufferPoolKind_UBO,
   R_VK_BufferPoolKind_Scratch,
   R_VK_BufferPoolKind_COUNT,
@@ -711,6 +727,7 @@ typedef struct R_VK_PipelineSet R_VK_PipelineSet;
 struct R_VK_PipelineSet
 {
   R_VK_Pipeline rect;
+  R_VK_Pipeline imgui;
   // R_VK_Pipeline blur;
   R_VK_Pipeline noise;
   R_VK_Pipeline edge;
@@ -886,7 +903,7 @@ internal VkFormat              r_vk_optimal_depth_format_from_pdevice(VkPhysical
 internal void                  r_vk_surface_update(R_VK_Surface *surface);
 
 //- memory
-internal R_VK_Memory*          r_vk_memory_alloc(R_VK_MemoryHeapUsage usage, VkMemoryRequirements mem_requirements, VkMemoryPropertyFlagBits preferred_property_flags, VkMemoryPropertyFlagBits fallback_property_flags);
+internal R_VK_Memory*          r_vk_memory_alloc(R_VK_MemoryHeapUsage usage, VkMemoryRequirements mem_requirements, VkMemoryPropertyFlags preferred_property_flags, VkMemoryPropertyFlags fallback_property_flags);
 internal void                  r_vk_memory_release(R_VK_Memory *memory);
 internal void                  r_vk_memory_map(R_VK_Memory *memory);
 internal VkMemoryPropertyFlags r_vk_property_flags_from_memroy(R_VK_Memory *memory);

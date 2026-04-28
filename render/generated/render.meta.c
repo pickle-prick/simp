@@ -43,9 +43,10 @@ str8_lit_comp("Nearest"),
 str8_lit_comp("Linear"),
 };
 
-String8 r_pass_kind_display_string_table[8] =
+String8 r_pass_kind_display_string_table[9] =
 {
 str8_lit_comp("Rect"),
+str8_lit_comp("ImGui"),
 str8_lit_comp("Blur"),
 str8_lit_comp("Noise"),
 str8_lit_comp("Edge"),
@@ -55,9 +56,10 @@ str8_lit_comp("Geo2D"),
 str8_lit_comp("Geo3D"),
 };
 
-U8 r_pass_kind_batch_table[8] =
+U8 r_pass_kind_batch_table[9] =
 {
 1,
+0,
 0,
 0,
 0,
@@ -67,9 +69,10 @@ U8 r_pass_kind_batch_table[8] =
 1,
 };
 
-U64 r_pass_kind_params_size_table[8] =
+U64 r_pass_kind_params_size_table[9] =
 {
 sizeof(R_PassParams_Rect),
+sizeof(R_PassParams_ImGui),
 sizeof(R_PassParams_Blur),
 sizeof(R_PassParams_Noise),
 sizeof(R_PassParams_Edge),

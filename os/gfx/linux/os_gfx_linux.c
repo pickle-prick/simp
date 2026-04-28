@@ -396,6 +396,7 @@ os_gfx_init(void)
       {OS_Cursor_UpLeft,          XC_top_left_corner},
       {OS_Cursor_UpDownLeftRight, XC_fleur},
       {OS_Cursor_HandPoint,       XC_hand1},
+      {OS_Cursor_Cross,           XC_crosshair},
       {OS_Cursor_Disabled,        XC_X_cursor},
     };
     for EachElement(idx, map)

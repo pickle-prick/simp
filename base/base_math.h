@@ -558,6 +558,7 @@ internal Vec4F32   transform_4x4f32(Mat4x4F32 a, Vec4F32 b);
 internal Mat4x4F32 scale_4x4f32(Mat4x4F32 m, F32 scale);
 internal Mat4x4F32 transpose_4x4f32(Mat4x4F32 m);
 internal Mat4x4F32 inverse_4x4f32(Mat4x4F32 m);
+internal Mat4x4F32 inverse_orthographic_4x4f32(Mat4x4F32 m);
 internal Mat4x4F32 derotate_4x4f32(Mat4x4F32 mat);
 
 ////////////////////////////////

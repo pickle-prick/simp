@@ -618,7 +618,7 @@ r_vk_surface_update(R_VK_Surface *surface)
 //- memory
 
 internal R_VK_Memory *
-r_vk_memory_alloc(R_VK_MemoryHeapUsage usage, VkMemoryRequirements mem_requirements, VkMemoryPropertyFlagBits preferred_property_flags, VkMemoryPropertyFlagBits fallback_property_flags)
+r_vk_memory_alloc(R_VK_MemoryHeapUsage usage, VkMemoryRequirements mem_requirements, VkMemoryPropertyFlags preferred_property_flags, VkMemoryPropertyFlags fallback_property_flags)
 {
   ProfBeginFunction();
   R_VK_MemoryAllocator *allocator = r_vk_state->allocator;
@@ -666,10 +666,11 @@ r_vk_memory_alloc(R_VK_MemoryHeapUsage usage, VkMemoryRequirements mem_requireme
             U64 physical_heap_free_size = physical_heap->cap-physical_heap->res;
             U64 max_free_slots = physical_heap_free_size/pool_chunk_size;
             // U64 next_block_slot_count = pool->last_block ? pool->last_block->slot_count*2 : 4;
+
             // FIXME: we need to handle this
             // validation layer: vkAllocateMemory(): pAllocateInfo->allocationSize (4294967296) is larger than maxMemoryAllocationSize (4294967292). While this might work locally on your machine, there are many external factors each platform has that is used to determine this limit. You should receive VK_ERROR_OUT_OF_DEVICE_MEMORY from this call, but even if you do not, it is highly advised from all hardware vendors to not ignore this limit.
-            // FIXME: remove this later
-            U64 next_block_slot_count = 4;
+
+            U64 next_block_slot_count = pool_chunk_size <= MB(32) ? 4 : 1;
             next_block_slot_count = ClampTop(max_free_slots, next_block_slot_count);
             U64 next_block_size = next_block_slot_count * pool_chunk_size;
 
@@ -755,6 +756,10 @@ r_vk_memory_release(R_VK_Memory *memory)
   R_VK_MemoryHeapBlock *block = slot->block;
   B32 block_was_full = block->first_free_slot == 0;
   SLLStackPush_N(block->first_free_slot, slot, free_next);
+
+  // FIXME: didn't reduce physical heap's cmt size
+  // block->physical_heap->cmt -= block->slot_size;
+
   // Now we have empty slot to be used, push to free block stack
   if(block_was_full)
   {
@@ -826,6 +831,25 @@ r_vk_buffer_from_pool(R_VK_BufferPoolKind kind, U64 required_size)
           VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
           bci.size = chunk_size;
           bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+          bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+          VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &bci, NULL, &buffer));
+
+          VkMemoryRequirements mem_requirements;
+          vkGetBufferMemoryRequirements(r_vk_ldevice()->h, buffer, &mem_requirements);
+
+          buffer_size = mem_requirements.size;
+
+          VkMemoryPropertyFlags fallback = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+          VkMemoryPropertyFlags preferred = fallback | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+          memory = r_vk_memory_alloc(R_VK_MemoryHeapUsage_Linear, mem_requirements, preferred, fallback);
+          VK_Assert(vkBindBufferMemory(r_vk_ldevice()->h, buffer, memory->h, memory->offset));
+          r_vk_memory_map(memory);
+        }break;
+        case R_VK_BufferPoolKind_VertexIndex:
+        {
+          VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+          bci.size = chunk_size;
+          bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT|VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
           bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
           VK_Assert(vkCreateBuffer(r_vk_ldevice()->h, &bci, NULL, &buffer));
 
@@ -2063,6 +2087,11 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
       vshad_mo = r_vk_state->vshad_modules[R_VK_VShadKind_Rect];
       fshad_mo = r_vk_state->fshad_modules[R_VK_FShadKind_Rect];
     }break;
+    case(R_VK_PipelineKind_GFX_ImGui):
+    {
+      vshad_mo = r_vk_state->vshad_modules[R_VK_VShadKind_ImGui];
+      fshad_mo = r_vk_state->fshad_modules[R_VK_FShadKind_ImGui];
+    }break;
     case(R_VK_PipelineKind_GFX_Noise):
     {
       vshad_mo = r_vk_state->vshad_modules[R_VK_VShadKind_Noise];
@@ -2372,6 +2401,32 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
       vtx_attr_descs[19].location = 19;
       vtx_attr_descs[19].format   = VK_FORMAT_R32_UINT;
       vtx_attr_descs[19].offset   = offsetof(R_Mesh2DInst, draw_edge);
+    }break;
+    case R_VK_PipelineKind_GFX_ImGui:
+    {
+      vtx_binding_desc_count = 1;
+      vtx_attr_desc_cnt = 3;
+      vtx_binding_descs = push_array(scratch.arena, VkVertexInputBindingDescription, vtx_binding_desc_count);
+      vtx_attr_descs = push_array(scratch.arena, VkVertexInputAttributeDescription, vtx_attr_desc_cnt);
+
+      vtx_binding_descs[0].binding   = 0;
+      vtx_binding_descs[0].stride    = sizeof(R_ImGuiVertex);
+      vtx_binding_descs[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+      vtx_attr_descs[0].binding = 0;
+      vtx_attr_descs[0].location = 0;
+      vtx_attr_descs[0].format = VK_FORMAT_R32G32_SFLOAT;
+      vtx_attr_descs[0].offset = offsetof(R_ImGuiVertex, pos);
+
+      vtx_attr_descs[1].binding = 0;
+      vtx_attr_descs[1].location = 1;
+      vtx_attr_descs[1].format = VK_FORMAT_R32G32_SFLOAT;
+      vtx_attr_descs[1].offset = offsetof(R_ImGuiVertex, uv);
+
+      vtx_attr_descs[2].binding = 0;
+      vtx_attr_descs[2].location = 2;
+      vtx_attr_descs[2].format = VK_FORMAT_R8G8B8A8_UNORM;
+      vtx_attr_descs[2].offset = offsetof(R_ImGuiVertex, color_rgba);
     }break;
     case R_VK_PipelineKind_GFX_Geo3D_ZPre:
     case R_VK_PipelineKind_GFX_Geo3D_Forward:
@@ -2735,6 +2790,11 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
     }break;
     case R_VK_PipelineKind_GFX_Geo3D_Debug:
     case R_VK_PipelineKind_GFX_Rect:
+    case R_VK_PipelineKind_GFX_ImGui:
+    {
+      rasterization_state_create_info.cullMode = VK_CULL_MODE_NONE;
+      rasterization_state_create_info.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    }break;
     // case R_VK_PipelineKind_GFX_Blur:
     case R_VK_PipelineKind_GFX_Noise:
     case R_VK_PipelineKind_GFX_Edge:
@@ -2798,6 +2858,7 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
       depth_stencil_state_create_info.back                  = (VkStencilOpState){0}; // Optional
     }break;
     case R_VK_PipelineKind_GFX_Rect:
+    case R_VK_PipelineKind_GFX_ImGui:
     // case R_VK_PipelineKind_GFX_Blur:
     case R_VK_PipelineKind_GFX_Noise:
     case R_VK_PipelineKind_GFX_Edge:
@@ -2911,6 +2972,16 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
     {
       color_blend_attachment_state[1].blendEnable = VK_TRUE;
     }break;
+    case R_VK_PipelineKind_GFX_ImGui:
+    {
+      color_blend_attachment_state[0].blendEnable = VK_TRUE;
+      color_blend_attachment_state[0].srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+      color_blend_attachment_state[0].dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+      color_blend_attachment_state[0].colorBlendOp = VK_BLEND_OP_ADD;
+      color_blend_attachment_state[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+      color_blend_attachment_state[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+      color_blend_attachment_state[0].alphaBlendOp = VK_BLEND_OP_ADD;
+    }break;
     case R_VK_PipelineKind_GFX_Geo2D_Forward:
     case R_VK_PipelineKind_GFX_Geo3D_Debug:
     case R_VK_PipelineKind_GFX_Geo3D_Forward:
@@ -3006,6 +3077,7 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
       color_blend_state_create_info.attachmentCount = 2;
     }break;
     // case R_VK_PipelineKind_GFX_Blur:
+    case R_VK_PipelineKind_GFX_ImGui:
     case R_VK_PipelineKind_GFX_Noise:
     case R_VK_PipelineKind_GFX_Edge:
     case R_VK_PipelineKind_GFX_Crt:
@@ -3057,6 +3129,18 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
         set_layout_count = 2;
         set_layouts[0] = r_vk_state->set_layouts[R_VK_DescriptorSetKind_UBO_Rect].h;
         set_layouts[1] = r_vk_state->set_layouts[R_VK_DescriptorSetKind_Tex2D].h;
+      }break;
+      case R_VK_PipelineKind_GFX_ImGui:
+      {
+        set_layout_count = 1;
+        set_layouts[0] = r_vk_state->set_layouts[R_VK_DescriptorSetKind_Tex2D].h;
+
+        push_constant_range_count = 1;
+        push_constant_ranges[0] = (VkPushConstantRange){
+          .offset = 0,
+          .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+          .size = sizeof(R_VK_PUSH_ImGui),
+        };
       }break;
       case R_VK_PipelineKind_GFX_Geo2D_Forward:
       {
@@ -3196,6 +3280,12 @@ r_vk_gfx_pipeline(R_VK_PipelineKind kind, R_GeoTopologyKind topology, R_GeoPolyg
         color_attachment_formats = push_array(scratch.arena, VkFormat, color_attachment_count);
         color_attachment_formats[0] = VK_FORMAT_R16G16B16A16_SFLOAT;
         color_attachment_formats[1] = VK_FORMAT_R32G32B32A32_SFLOAT;
+      }break;
+      case R_VK_PipelineKind_GFX_ImGui:
+      {
+        color_attachment_count = 1;
+        color_attachment_formats = push_array(scratch.arena, VkFormat, color_attachment_count);
+        color_attachment_formats[0] = VK_FORMAT_R16G16B16A16_SFLOAT;
       }break;
       case R_VK_PipelineKind_GFX_Noise:
       {
@@ -3693,6 +3783,7 @@ r_init(OS_Handle window, B32 debug)
     os_abort(1);
     scratch_end(scratch);
   }
+  printf("Vulkan API version: %d:%d:%d\n", major, minor, patch);
 
   ////////////////////////////////
   //~ Application info
@@ -3740,7 +3831,7 @@ r_init(OS_Handle window, B32 debug)
       const char *ext = required_inst_exts[i];
       for(U64 j = 0; j < ext_count; j++)
       {
-        if(strcmp(ext, extensions[j].extensionName))
+        if(strcmp(ext, extensions[j].extensionName) == 0)
         {
           found++;
           break;
@@ -3929,7 +4020,7 @@ r_init(OS_Handle window, B32 debug)
       {
         for(U64 k = 0; k < extension_count; k++)
         {
-          if(strcmp(extensions[k].extensionName, required_pdevice_ext_names[j]))
+          if(strcmp(extensions[k].extensionName, required_pdevice_ext_names[j]) == 0)
           {
             found++;
             break;
@@ -4012,7 +4103,7 @@ r_init(OS_Handle window, B32 debug)
     R_VK_PhysicalDevice *dst = push_array(r_vk_state->arena, R_VK_PhysicalDevice, 1);
     *dst = *src;
     dst->extensions = push_array(r_vk_state->arena, VkExtensionProperties, src->extension_count);
-    MemoryCopy(&dst->extensions, &src->extensions, sizeof(VkExtensionProperties)*src->extension_count);
+    MemoryCopy(dst->extensions, src->extensions, sizeof(VkExtensionProperties)*src->extension_count);
 
     // Get memory properties & depth image format for the physical device we picked
     vkGetPhysicalDeviceMemoryProperties(dst->h, &dst->mem_properties);
@@ -4264,6 +4355,7 @@ r_init(OS_Handle window, B32 debug)
     switch(kind)
     {
       case R_VK_VShadKind_Rect:              {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,rect,vert);}break;
+      case R_VK_VShadKind_ImGui:             {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,imgui,vert);}break;
       case R_VK_VShadKind_Noise:             {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,noise,vert);}break;
       case R_VK_VShadKind_Edge:              {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,edge,vert);}break;
       case R_VK_VShadKind_Crt:               {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,crt,vert);}break;
@@ -4295,6 +4387,7 @@ r_init(OS_Handle window, B32 debug)
     switch(kind)
     {
       case R_VK_FShadKind_Rect:              {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,rect,frag);}break;
+      case R_VK_FShadKind_ImGui:             {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,imgui,frag);}break;
       case R_VK_FShadKind_Noise:             {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,noise,frag);}break;
       case R_VK_FShadKind_Edge:              {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,edge,frag);}break;
       case R_VK_FShadKind_Crt:               {shad_code = r_vk_shader_code_from_name_suffix(scratch.arena,crt, frag);}break;
@@ -4578,6 +4671,9 @@ r_init(OS_Handle window, B32 debug)
 
     // rect
     r_vk_state->pipeline_set.rect = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_Rect, R_GeoTopologyKind_TriangleStrip, R_GeoPolygonKind_Fill, swapchain_format, 0);
+
+    // imgui
+    r_vk_state->pipeline_set.imgui = r_vk_gfx_pipeline(R_VK_PipelineKind_GFX_ImGui, R_GeoTopologyKind_Triangles, R_GeoPolygonKind_Fill, swapchain_format, 0);
 
     // blur
 
@@ -5553,8 +5649,8 @@ r_window_submit(R_Handle window_equip, R_PassList *passes)
       case R_PassKind_Rect:
       {
         ProfBegin("UI Pass");
-        VkRenderingAttachmentInfo color_attachment_infos[2] = {0};
 
+        VkRenderingAttachmentInfo color_attachment_infos[2] = {0};
         color_attachment_infos[0].sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
         color_attachment_infos[0].imageView   = rt_set->stage_color_image.view;
         color_attachment_infos[0].imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
@@ -5787,6 +5883,112 @@ r_window_submit(R_Handle window_equip, R_PassList *passes)
         }
 
         vkCmdEndRendering(cmd_buf);
+        ProfEnd();
+      }break;
+      case R_PassKind_ImGui:
+      {
+        ProfBegin("ImGui Pass");
+
+        VkRenderingAttachmentInfo color_attachment_infos[1] = {0};
+        color_attachment_infos[0].sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        color_attachment_infos[0].imageView   = rt_set->stage_color_image.view;
+        color_attachment_infos[0].imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
+        color_attachment_infos[0].loadOp      = VK_ATTACHMENT_LOAD_OP_LOAD;
+        color_attachment_infos[0].storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
+
+        VkRenderingInfo render_info = { VK_STRUCTURE_TYPE_RENDERING_INFO };
+        // The render area defiens where shader loads and stores will take place
+        // The pixels outside this region will have undefined values
+        render_info.renderArea.offset = (VkOffset2D){0, 0};
+        render_info.renderArea.extent = rt_set->stage_color_image.extent;
+        render_info.layerCount = 1;
+        render_info.colorAttachmentCount = ArrayCount(color_attachment_infos);
+        render_info.pColorAttachments = color_attachment_infos;
+
+        // Begin drawing
+        vkCmdBeginRendering(cmd_buf, &render_info);
+
+        // Unpack params 
+        R_PassParams_ImGui *params = pass->params_imgui;
+
+        R_VK_Pipeline *pipeline = &r_vk_pipeline_set()->imgui;
+        vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->h);
+
+        // Viewport
+        VkViewport viewport = {0};
+        viewport.x        = 0.0f;
+        viewport.y        = 0.0f;
+        viewport.width    = rt_set->stage_color_image.extent.width;
+        viewport.height   = rt_set->stage_color_image.extent.height;
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
+
+        // Upload vertices and indices
+        R_VK_Buffer *vertex_buffer = r_vk_buffer_from_pool(R_VK_BufferPoolKind_VertexIndex, sizeof(R_ImGuiVertex)*params->vertex_count);
+        R_VK_Buffer *index_buffer = r_vk_buffer_from_pool(R_VK_BufferPoolKind_VertexIndex, sizeof(R_ImGuiIndex)*params->index_count);
+        MemoryCopy(vertex_buffer->memory->mapped, params->vertices, sizeof(R_ImGuiVertex)*params->vertex_count);
+        MemoryCopy(index_buffer->memory->mapped, params->indices, sizeof(R_ImGuiIndex)*params->index_count);
+        SLLQueuePush(stage->first_staged_buffer, stage->last_staged_buffer, vertex_buffer);
+        SLLQueuePush(stage->first_staged_buffer, stage->last_staged_buffer, index_buffer);
+
+        // Bind vertex and index buffer
+        vkCmdBindVertexBuffers(cmd_buf, 0, 1, &vertex_buffer->h, &(VkDeviceSize){0});
+        vkCmdBindIndexBuffer(cmd_buf, index_buffer->h, (VkDeviceSize){0}, VK_INDEX_TYPE_UINT16);
+
+        for(U64 i = 0; i < params->command_count; ++i)
+        {
+          R_ImGuiDrawCmd *draw_cmd = &params->commands[i];
+
+          // Push Constants
+          R_VK_PUSH_ImGui push = {
+            .display_pos = params->display_pos,
+            .display_size = params->display_size,
+            .framebuffer_scale = params->framebuffer_scale,
+          };
+
+          vkCmdPushConstants(cmd_buf,
+                             pipeline->layout,
+                             VK_SHADER_STAGE_VERTEX_BIT,
+                             0,
+                             sizeof(push),
+                             &push);
+
+          // Setup Clip
+          Vec2F32 clip_min = sub_2f32(draw_cmd->clip.p0, params->display_pos);
+          Vec2F32 clip_max = sub_2f32(draw_cmd->clip.p1, params->display_pos);
+          clip_min = mul_2f32(clip_min, params->framebuffer_scale);
+          clip_max = mul_2f32(clip_max, params->framebuffer_scale);
+          Rng2F32 clip = {clip_min, clip_max};
+
+          VkRect2D scissor = {0};
+          scissor.offset = (VkOffset2D){(S32)clip.p0.x, (S32)clip.p0.y};
+          scissor.offset.x = Max(scissor.offset.x, 0);
+          scissor.offset.y = Max(scissor.offset.y, 0);
+          Vec2F32 clip_dim = dim_2f32(clip);
+          scissor.extent = (VkExtent2D){(S32)clip_dim.x, (S32)clip_dim.y};
+          Assert(!(clip_dim.x == 0 && clip_dim.y == 0));
+          vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
+          // VkRect2D scissor = {0};
+          // scissor.offset = (VkOffset2D){0, 0};
+          // scissor.extent = rt_set->stage_color_image.extent;
+          // vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
+
+          // Bind Texture
+          R_Handle tex_handle = draw_cmd->tex;
+          if(r_handle_match(tex_handle, r_handle_zero()))
+          {
+            tex_handle = r_vk_state->backup_texture;
+          }
+          R_VK_Tex2D *texture = r_vk_tex2d_from_handle(tex_handle);
+          vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout, 0, 1, &texture->desc_set.h, 0, NULL);
+
+          // Draw
+          vkCmdDrawIndexed(cmd_buf, draw_cmd->elem_count, 1, draw_cmd->idx_offset, draw_cmd->vtx_offset, 0);
+        }
+
+        vkCmdEndRendering(cmd_buf);
+
         ProfEnd();
       }break;
       case R_PassKind_Blur:

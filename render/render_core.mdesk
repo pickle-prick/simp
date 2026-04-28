@@ -66,6 +66,7 @@ R_GeoPolygonKindTable:
 R_PassKindTable:
 {
   {Rect        1      "Rect"  }
+  {ImGui       0      "ImGui" }
   {Blur        0      "Blur"  }
   {Noise       0      "Noise" }
   {Edge        0      "Edge"  }

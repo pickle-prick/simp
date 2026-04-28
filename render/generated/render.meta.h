@@ -54,6 +54,7 @@ R_GeoPolygonKind_COUNT,
 typedef enum R_PassKind
 {
 R_PassKind_Rect,
+R_PassKind_ImGui,
 R_PassKind_Blur,
 R_PassKind_Noise,
 R_PassKind_Edge,
@@ -69,8 +70,8 @@ extern String8 r_tex2d_format_display_string_table[9];
 extern U8 r_tex2d_format_bytes_per_pixel_table[9];
 extern String8 r_resource_kind_display_string_table[3];
 extern String8 r_tex2d_sample_kind_display_string_table[2];
-extern String8 r_pass_kind_display_string_table[8];
-extern U8 r_pass_kind_batch_table[8];
+extern String8 r_pass_kind_display_string_table[9];
+extern U8 r_pass_kind_batch_table[9];
 
 C_LINKAGE_END
 

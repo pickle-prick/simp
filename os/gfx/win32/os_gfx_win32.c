@@ -1577,6 +1577,7 @@ X(UpRight, IDC_SIZENESW) \
 X(UpLeft, IDC_SIZENWSE) \
 X(UpDownLeftRight, IDC_SIZEALL) \
 X(HandPoint, IDC_HAND)\
+X(Cross, IDC_CROSS) \
 X(Disabled, IDC_NO)
 #define CursorCase(E,R) case OS_Cursor_##E:{ \
 local_persist HCURSOR curs = 0; \
