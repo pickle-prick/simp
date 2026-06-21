@@ -75,6 +75,8 @@ return old_value;
 #include "shader/noise_vert.spv.h"
 #include "shader/rect_frag.spv.h"
 #include "shader/rect_vert.spv.h"
+#include "shader/imgui_vert.spv.h"
+#include "shader/imgui_frag.spv.h"
 #endif
 
 ////////////////////////////////
