@@ -803,53 +803,53 @@ dr_sprite(R_Handle vertices, R_Handle indices,
 internal void
 dr_sub_bucket(DR_Bucket *bucket)
 {
-  NotImplemented;
-  // Arena *arena = dr_thread_ctx->arena;
-  // DR_Bucket *src = bucket;
-  // DR_Bucket *dst = dr_top_bucket();
-  // Rng2F32 dst_clip = dr_top_clip();
-  // B32 dst_clip_is_set = !(dst_clip.x0 == 0 && dst_clip.x1 == 0 &&
-  //                         dst_clip.y0 == 0 && dst_clip.y1 == 0);
-  // for(R_PassNode *n = src->passes.first; n != 0; n = n->next)
-  // {
-  //   R_Pass *src_pass = &n->v;
-  //   R_Pass *dst_pass = r_pass_from_kind(arena, &dst->passes, src_pass->kind);
-  //   switch(dst_pass->kind)
-  //   {
-  //     default:{dst_pass->params = src_pass->params;}break;
-  //     case R_PassKind_Rect:
-  //     {
-  //       R_PassParams_Rect *src_ui = src_pass->params_rect;
-  //       R_PassParams_Rect *dst_ui = dst_pass->params_rect;
-  //       for(R_BatchGroup2DNode *src_group_n = src_ui->rects.first;
-  //           src_group_n != 0;
-  //           src_group_n = src_group_n->next)
-  //       {
-  //         R_BatchGroup2DNode *dst_group_n = push_array(arena, R_BatchGroup2DNode, 1);
-  //         SLLQueuePush(dst_ui->rects.first, dst_ui->rects.last, dst_group_n);
-  //         dst_ui->rects.count += 1;
-  //         MemoryCopyStruct(&dst_group_n->params, &src_group_n->params);
-  //         dst_group_n->batches = src_group_n->batches;
-  //         dst_group_n->params.xform = dr_top_xform2d();
-  //         B32 clip_is_set = !(dst_group_n->params.clip.x0 == 0 &&
-  //                             dst_group_n->params.clip.y0 == 0 &&
-  //                             dst_group_n->params.clip.x1 == 0 &&
-  //                             dst_group_n->params.clip.y1 == 0);
-  //         if(clip_is_set)
-  //         {
-  //           Rng2F32 og_clip = dst_group_n->params.clip;
-  //           Mat3x3F32 xform = dst_group_n->params.xform;
-  //           dst_group_n->params.clip = r2f32(xform_3f32(v3f32(og_clip.x0, og_clip.y0, 1), xform).xy,
-  //                                            xform_3f32(v3f32(og_clip.x1, og_clip.y1, 1), xform).xy);
-  //         }
-  //         if(dst_clip_is_set)
-  //         {
-  //           dst_group_n->params.clip = clip_is_set ? intersect_2f32(dst_clip, dst_group_n->params.clip) : dst_clip;
-  //         }
-  //       }
-  //     }break;
-  //   }
-  // }
+  Arena *arena = dr_thread_ctx->arena;
+  DR_Bucket *src = bucket;
+  DR_Bucket *dst = dr_top_bucket();
+  Rng2F32 dst_clip = dr_top_clip();
+  B32 dst_clip_is_set = !(dst_clip.x0 == 0 && dst_clip.x1 == 0 &&
+                          dst_clip.y0 == 0 && dst_clip.y1 == 0);
+  for(R_PassNode *n = src->passes.first; n != 0; n = n->next)
+  {
+    R_Pass *src_pass = &n->v;
+    R_Pass *dst_pass = r_pass_from_kind(arena, &dst->passes, src_pass->kind);
+    switch(dst_pass->kind)
+    {
+      default:{dst_pass->params = src_pass->params;}break;
+      case R_PassKind_Rect:
+      {
+        R_PassParams_Rect *src_ui = src_pass->params_rect;
+        R_PassParams_Rect *dst_ui = dst_pass->params_rect;
+        for(R_BatchGroupRectNode *src_group_n = src_ui->rects.first;
+            src_group_n != 0;
+            src_group_n = src_group_n->next)
+        {
+          R_BatchGroupRectNode *dst_group_n = push_array(arena, R_BatchGroupRectNode, 1);
+          SLLQueuePush(dst_ui->rects.first, dst_ui->rects.last, dst_group_n);
+          dst_ui->rects.count += 1;
+          MemoryCopyStruct(&dst_group_n->params, &src_group_n->params);
+          dst_group_n->batches = src_group_n->batches;
+          dst_group_n->params.xform = dr_top_xform2d();
+          dst_group_n->params.viewport = dr_top_viewport();
+          B32 clip_is_set = !(dst_group_n->params.clip.x0 == 0 &&
+                              dst_group_n->params.clip.y0 == 0 &&
+                              dst_group_n->params.clip.x1 == 0 &&
+                              dst_group_n->params.clip.y1 == 0);
+          if(clip_is_set)
+          {
+            Rng2F32 og_clip = dst_group_n->params.clip;
+            Mat3x3F32 xform = dst_group_n->params.xform;
+            dst_group_n->params.clip = r2f32(xform_3f32(v3f32(og_clip.x0, og_clip.y0, 1), xform).xy,
+                                             xform_3f32(v3f32(og_clip.x1, og_clip.y1, 1), xform).xy);
+          }
+          if(dst_clip_is_set)
+          {
+            dst_group_n->params.clip = clip_is_set ? intersect_2f32(dst_clip, dst_group_n->params.clip) : dst_clip;
+          }
+        }
+      }break;
+    }
+  }
 }
 
 ////////////////////////////////

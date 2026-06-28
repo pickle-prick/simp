@@ -275,6 +275,14 @@ internal Vec3F32 cross_3f32(Vec3F32 a, Vec3F32 b) {
     a.x * b.y - a.y * b.x};
   return c;
 }
+internal Vec3F32 xform_3f32(Vec3F32 v, Mat3x3F32 m)
+{
+  Vec3F32 result;
+  result.x = v.x*m.v[0][0] + v.y*m.v[1][0] + v.z*m.v[2][0];
+  result.y = v.x*m.v[0][1] + v.y*m.v[1][1] + v.z*m.v[2][1];
+  result.z = v.x*m.v[0][2] + v.y*m.v[1][2] + v.z*m.v[2][2];
+  return result;
+}
 
 internal Vec3S32 vec_3s32(S32 x, S32 y, S32 z) {
   Vec3S32 v = {x, y, z};
