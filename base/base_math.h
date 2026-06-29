@@ -320,6 +320,7 @@ union Rng2F32 {
     F32 y1;
   };
   Vec2F32 v[2];
+  F32 float4[4];
 };
 
 typedef union Rng2S64 Rng2S64;
